@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 
 import requests
 
@@ -14,10 +14,15 @@ class WahaClient:
     """WhatsApp HTTP API client using a local WAHA instance.
 
     Uses timestamp-based deduplication to avoid skipping messages that
-    arrived between polls."""
+    arrived between polls.
+    
+    Implements WAHA API with X-Api-Key authentication.
+    See: https://waha.devlike.pro/docs/overview/quick-start/
+    """
 
     def __init__(self) -> None:
         self._base = settings.waha_api_url.rstrip("/")
+        self._api_key = getattr(settings, 'waha_api_key', '')
         self._phone = settings.target_phone
         self._session = settings.waha_session
         self._poll_interval = settings.poll_interval_seconds
@@ -27,6 +32,41 @@ class WahaClient:
         self._poll_thread: Optional[threading.Thread] = None
         self._reply_callback: Optional[Callable[[str], None]] = None
         self._started_at: float = 0.0
+        self._connected = False
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Build request headers with API key authentication."""
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if self._api_key:
+            headers["X-Api-Key"] = self._api_key
+        return headers
+
+    def check_connection(self) -> bool:
+        """Verify WAHA is running and session is active."""
+        url = f"{self._base}/api/sessions/{self._session}"
+        try:
+            r = requests.get(url, headers=self._get_headers(), timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                status = data.get("status", "UNKNOWN")
+                self._connected = status == "WORKING"
+                if self._connected:
+                    logger.info("WAHA session '%s' is WORKING", self._session)
+                    ghost_status.add_log(f"[green]WAHA connected[/green] (session: {self._session})")
+                else:
+                    logger.warning("WAHA session status: %s", status)
+                    ghost_status.add_log(f"[yellow]WAHA session status: {status}[/yellow]")
+                return self._connected
+            else:
+                logger.error("WAHA session check failed: %d", r.status_code)
+                return False
+        except requests.RequestException as exc:
+            logger.error("WAHA connection check failed: %s", exc)
+            ghost_status.add_log(f"[red]WAHA connection failed: {exc}[/red]")
+            return False
 
     def send(self, text: str) -> bool:
         url = f"{self._base}/api/sendText"
@@ -36,7 +76,7 @@ class WahaClient:
             "session": self._session,
         }
         try:
-            r = requests.post(url, json=payload, timeout=10)
+            r = requests.post(url, json=payload, headers=self._get_headers(), timeout=10)
             r.raise_for_status()
             logger.info("WAHA >>> %s", text[:80])
             ghost_status.add_log(f"[green]WAHA >>>[/green] {text[:60]}")
@@ -50,6 +90,10 @@ class WahaClient:
         self._reply_callback = callback
         self._polling = True
         self._started_at = time.time()
+        
+        # Check connection on startup
+        self.check_connection()
+        
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poll_thread.start()
         logger.info("WAHA polling started (every %.1fs)", self._poll_interval)
@@ -77,7 +121,7 @@ class WahaClient:
             "session": self._session,
         }
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(url, params=params, headers=self._get_headers(), timeout=10)
             r.raise_for_status()
             messages = r.json()
         except (requests.RequestException, ValueError) as exc:

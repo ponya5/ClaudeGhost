@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     # WAHA / WhatsApp
     waha_api_url: str = Field(default="http://localhost:3000")
+    waha_api_key: str = Field(default="")
     waha_session: str = Field(default="default")
     target_phone: str = Field(default="1234567890@c.us")
     waha_enabled: bool = Field(default=True)

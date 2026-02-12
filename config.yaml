@@ -1,0 +1,81 @@
+# =============================================================================
+# ClaudeGhost Configuration (config.yaml)
+# =============================================================================
+# This file provides default configuration for ClaudeGhost.
+# Environment variables in .env will OVERRIDE these settings.
+#
+# Priority: ENV variables > config.yaml > built-in defaults
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# WAHA (WhatsApp HTTP API) Configuration
+# See: https://waha.devlike.pro/docs/overview/quick-start/
+# -----------------------------------------------------------------------------
+waha:
+  # WAHA server URL
+  waha_api_url: "http://localhost:3000"
+  
+  # API key for authentication (recommended to set in .env for security!)
+  # waha_api_key: ""
+  
+  # Session name
+  waha_session: "default"
+  
+  # Enable/disable WAHA notifications
+  waha_enabled: true
+  
+  # Target WhatsApp number (format: number@c.us)
+  # target_phone: "1234567890@c.us"
+
+# -----------------------------------------------------------------------------
+# Autonomy & Budget Settings
+# -----------------------------------------------------------------------------
+autonomy:
+  # Default AFK level when --level is not specified
+  # 1 = Paranoid (ask for everything)
+  # 2 = Auditor (auto-approve read-only)
+  # 3 = Manager (auto-approve read + write)
+  # 4 = Director (auto-approve read + write + execute)
+  # 5 = God Mode (auto-approve everything including critical)
+  default_afk_level: 3
+  
+  # Maximum API cost before pausing for approval (USD)
+  max_budget_usd: 10.00
+  
+  # Budget preset name
+  budget_preset: "medium"
+
+# -----------------------------------------------------------------------------
+# Claude CLI Settings
+# -----------------------------------------------------------------------------
+claude:
+  # Path to claude binary
+  claude_binary: "claude"
+  
+  # Default working directory
+  working_directory: "."
+
+# -----------------------------------------------------------------------------
+# Guardian (Risk Classification) Settings
+# -----------------------------------------------------------------------------
+guardian:
+  # Commands that are ALWAYS blocked (even in God Mode)
+  blocked_commands:
+    - "rm -rf /"
+    - "rm -rf ~"
+    - "rm -rf /*"
+    - "format c:"
+    - ":(){ :|:& };:"  # Fork bomb
+    - "dd if=/dev/zero of=/dev/sda"
+    - "> /dev/sda"
+    - "mkfs"
+
+# -----------------------------------------------------------------------------
+# Timing Configuration
+# -----------------------------------------------------------------------------
+timing:
+  # Poll interval for checking WAHA messages (seconds)
+  poll_interval_seconds: 3.0
+  
+  # Stall detection timeout (seconds)
+  heartbeat_timeout_seconds: 60.0

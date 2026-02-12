@@ -1,6 +1,7 @@
-pexpect>=4.9.0
+pexpect>=4.9.0;platform_system!="Windows"
 requests>=2.31.0
 rich>=13.7.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
+pyyaml>=6.0.0
