@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+# Budget presets (in USD)
+BUDGET_PRESETS: dict[str, float] = {
+    "micro": 0.50,
+    "small": 2.00,
+    "medium": 5.00,
+    "large": 10.00,
+    "xlarge": 25.00,
+    "unlimited": 999.99,
+}
+
+LEVEL_NAMES: dict[int, str] = {
+    1: "Paranoid",
+    2: "Auditor",
+    3: "Manager",
+    4: "Director",
+    5: "God Mode",
+}
+
+LEVEL_DESCRIPTIONS: dict[int, str] = {
+    1: "Ask for EVERYTHING (read, write, execute, high-risk)",
+    2: "Auto-approve read-only, ask for rest",
+    3: "Auto-approve read+write, ask for execute/high-risk",
+    4: "Auto-approve read+write+execute, ask for high-risk only",
+    5: "Auto-approve ALL (notify only for high-risk)",
+}
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else None,
+        env_file_encoding="utf-8",
+    )
+
+    # WAHA / WhatsApp
+    waha_api_url: str = Field(default="http://localhost:3000")
+    waha_session: str = Field(default="default")
+    target_phone: str = Field(default="1234567890@c.us")
+    waha_enabled: bool = Field(default=True)
+
+    # Autonomy
+    default_afk_level: int = Field(default=3, ge=1, le=5)
+
+    # Budget
+    max_budget_usd: float = Field(default=5.00, ge=0)
+    budget_preset: str = Field(default="medium")
+
+    # Claude
+    claude_binary: str = Field(default="claude")
+    working_directory: str = Field(default=".")
+
+    # Timing
+    poll_interval_seconds: float = Field(default=3.0)
+    heartbeat_timeout_seconds: float = Field(default=60.0)
+
+
+settings = Settings()
+
+
+class SessionConfig:
+    """Runtime configuration for a single ClaudeGhost session.
+    Allows overriding settings per-task without modifying the global settings."""
+
+    def __init__(
+        self,
+        task: str,
+        afk_level: int = 3,
+        budget_usd: float = 5.0,
+        waha_enabled: bool = True,
+        working_directory: Optional[str] = None,
+    ) -> None:
+        self.task = task
+        self.afk_level = max(1, min(5, afk_level))
+        self.budget_usd = budget_usd
+        self.waha_enabled = waha_enabled
+        self.working_directory = working_directory or settings.working_directory
+
+    @property
+    def level_name(self) -> str:
+        return LEVEL_NAMES.get(self.afk_level, "Unknown")
+
+    @property
+    def level_description(self) -> str:
+        return LEVEL_DESCRIPTIONS.get(self.afk_level, "")
