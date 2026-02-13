@@ -1,12 +1,11 @@
 """Interactive launcher for ClaudeGhost sessions."""
 from __future__ import annotations
 
-import sys
 from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.text import Text
 
@@ -22,6 +21,7 @@ console = Console()
 
 
 def print_banner() -> None:
+    """Display the ClaudeGhost ASCII banner."""
     banner = Text()
     banner.append("   _____ _                 _       ", style="bold blue")
     banner.append("\n")
@@ -49,8 +49,7 @@ def print_banner() -> None:
     banner.append("\n\n")
     banner.append(" Headless Supervisor for Claude Code", style="dim")
     banner.append("\n")
-    banner.append(" v1.0", style="dim")
-
+    banner.append(" v2.0 - Telegram Edition", style="dim")
     console.print(Panel(banner, border_style="blue", padding=(0, 2)))
     console.print()
 
@@ -58,7 +57,6 @@ def print_banner() -> None:
 def select_afk_level() -> int:
     """Interactive AFK level selection."""
     console.print("[bold]Step 1: Select AFK Autonomy Level[/bold]\n")
-
     table = Table(show_header=True, header_style="bold magenta", box=None)
     table.add_column("Level", style="bold", width=8)
     table.add_column("Name", width=12)
@@ -70,29 +68,27 @@ def select_afk_level() -> int:
         table.add_row(
             f"[{color}]{level}[/{color}]",
             f"[{color}]{name}[/{color}]",
-            desc
+            desc,
         )
-
     console.print(table)
     console.print()
 
-    while True:
-        choice = Prompt.ask(
-            "Select level",
-            choices=["1", "2", "3", "4", "5"],
-            default=str(settings.default_afk_level)
-        )
-        level = int(choice)
-        console.print(
-            f"  [green]>[/green] Selected: [bold]{level}[/bold] ({LEVEL_NAMES[level]})\n"
-        )
-        return level
+    choice = Prompt.ask(
+        "Select level",
+        choices=["1", "2", "3", "4", "5"],
+        default=str(settings.default_afk_level),
+    )
+    level = int(choice)
+    console.print(
+        f"  [green]>[/green] Selected: [bold]{level}[/bold]"
+        f" ({LEVEL_NAMES[level]})\n"
+    )
+    return level
 
 
 def select_budget() -> float:
     """Interactive budget selection."""
     console.print("[bold]Step 2: Set Usage Budget Limit[/bold]\n")
-
     table = Table(show_header=True, header_style="bold magenta", box=None)
     table.add_column("Preset", width=12)
     table.add_column("Amount", width=10)
@@ -102,9 +98,7 @@ def select_budget() -> float:
             table.add_row(name.capitalize(), "[dim]No limit[/dim]")
         else:
             table.add_row(name.capitalize(), f"${amount:.2f}")
-
     table.add_row("[cyan]custom[/cyan]", "[cyan]Enter amount[/cyan]")
-
     console.print(table)
     console.print()
 
@@ -112,14 +106,13 @@ def select_budget() -> float:
     choice = Prompt.ask(
         "Select preset or 'custom'",
         choices=presets,
-        default=settings.budget_preset
+        default=settings.budget_preset,
     )
 
     if choice == "custom":
         while True:
             try:
-                amount_str = Prompt.ask("Enter budget in USD", default="5.00")
-                amount = float(amount_str)
+                amount = float(Prompt.ask("Enter budget in USD", default="5.00"))
                 if amount < 0:
                     console.print("[red]Budget must be positive[/red]")
                     continue
@@ -130,114 +123,91 @@ def select_budget() -> float:
         amount = BUDGET_PRESETS[choice]
 
     if amount > 100:
-        console.print(f"  [green]>[/green] Budget: [bold]Unlimited[/bold]\n")
+        console.print("  [green]>[/green] Budget: [bold]Unlimited[/bold]\n")
     else:
         console.print(f"  [green]>[/green] Budget: [bold]${amount:.2f}[/bold]\n")
-
     return amount
 
 
 def select_notification_mode() -> bool:
-    """Select WhatsApp or screen-only notification."""
+    """Select Telegram or screen-only notification."""
     console.print("[bold]Step 3: Notification Mode[/bold]\n")
-
-    console.print("  [1] [green]WhatsApp[/green] - Get approval requests on your phone via WAHA")
-    console.print("  [2] [cyan]Screen Only[/cyan] - Show prompts in terminal (must be present)\n")
+    console.print("  [1] [green]Telegram[/green] - Get approval requests on your phone")
+    console.print("  [2] [cyan]Screen Only[/cyan] - Show prompts in terminal\n")
 
     choice = Prompt.ask(
         "Select mode",
-        choices=["1", "2", "whatsapp", "screen"],
-        default="1" if settings.waha_enabled else "2"
+        choices=["1", "2", "telegram", "screen"],
+        default="1" if settings.telegram_enabled else "2",
     )
+    telegram_enabled = choice in ("1", "telegram")
 
-    waha_enabled = choice in ("1", "whatsapp")
-
-    if waha_enabled:
-        console.print(f"  [green]>[/green] Mode: [bold]WhatsApp[/bold] ({settings.target_phone})\n")
+    if telegram_enabled:
+        console.print("  [green]>[/green] Mode: [bold]Telegram[/bold]\n")
     else:
-        console.print(f"  [green]>[/green] Mode: [bold]Screen Only[/bold]\n")
-
-    return waha_enabled
+        console.print("  [green]>[/green] Mode: [bold]Screen Only[/bold]\n")
+    return telegram_enabled
 
 
 def enter_task() -> str:
     """Get the task description from user."""
     console.print("[bold]Step 4: Enter Your Task[/bold]\n")
-    console.print("[dim]Describe what you want Claude Code to do.[/dim]")
     console.print("[dim]Examples:[/dim]")
     console.print("[dim]  - Refactor auth_service.py to use JWT[/dim]")
-    console.print("[dim]  - Add unit tests for the UserController class[/dim]")
-    console.print("[dim]  - Fix the bug in payment processing module[/dim]\n")
+    console.print("[dim]  - Add unit tests for UserController[/dim]")
+    console.print("[dim]  - Fix the bug in payment processing[/dim]\n")
 
     while True:
-        task = Prompt.ask("Task")
-        task = task.strip()
-        if not task:
-            console.print("[red]Task cannot be empty[/red]")
-            continue
-        if len(task) < 5:
-            console.print("[red]Please provide a more detailed task description[/red]")
-            continue
-        break
+        task = Prompt.ask("Task").strip()
+        if len(task) >= 5:
+            break
+        console.print("[red]Please provide a more detailed task[/red]")
 
-    console.print(f"  [green]>[/green] Task: [bold]{task[:60]}{'...' if len(task) > 60 else ''}[/bold]\n")
+    short = task[:60] + ("..." if len(task) > 60 else "")
+    console.print(f"  [green]>[/green] Task: [bold]{short}[/bold]\n")
     return task
 
 
 def confirm_and_execute(config: SessionConfig) -> bool:
     """Show summary and confirm execution."""
     console.print("[bold]Session Configuration Summary[/bold]\n")
-
     summary = Table(show_header=False, box=None, padding=(0, 2))
     summary.add_column("Key", style="dim")
     summary.add_column("Value", style="bold")
 
-    summary.add_row("Task:", config.task[:60] + ("..." if len(config.task) > 60 else ""))
+    short_task = config.task[:60] + ("..." if len(config.task) > 60 else "")
+    summary.add_row("Task:", short_task)
     summary.add_row("AFK Level:", f"{config.afk_level} ({config.level_name})")
-
-    if config.budget_usd > 100:
-        summary.add_row("Budget:", "Unlimited")
-    else:
-        summary.add_row("Budget:", f"${config.budget_usd:.2f}")
-
-    summary.add_row(
-        "Notifications:",
-        "WhatsApp" if config.waha_enabled else "Screen Only"
-    )
+    budget_str = "Unlimited" if config.budget_usd > 100 else f"${config.budget_usd:.2f}"
+    summary.add_row("Budget:", budget_str)
+    notify = "Telegram" if config.telegram_enabled else "Screen Only"
+    summary.add_row("Notifications:", notify)
     summary.add_row("Working Dir:", config.working_directory)
 
     console.print(Panel(summary, border_style="green"))
     console.print()
-
     return Confirm.ask("[bold]Execute task?[/bold]", default=True)
 
 
 def run_interactive_launcher() -> Optional[SessionConfig]:
-    """Run the full interactive launcher flow.
-
-    Returns SessionConfig if user confirms, None if cancelled.
-    """
+    """Run the full interactive launcher flow."""
     print_banner()
-
     try:
         afk_level = select_afk_level()
         budget = select_budget()
-        waha_enabled = select_notification_mode()
+        telegram_enabled = select_notification_mode()
         task = enter_task()
 
         config = SessionConfig(
             task=task,
             afk_level=afk_level,
             budget_usd=budget,
-            waha_enabled=waha_enabled,
+            telegram_enabled=telegram_enabled,
         )
-
         if confirm_and_execute(config):
             return config
-        else:
-            console.print("[yellow]Cancelled.[/yellow]")
-            return None
-
+        console.print("[yellow]Cancelled.[/yellow]")
+        return None
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
         return None
@@ -247,12 +217,12 @@ def run_quick_launcher(
     task: str,
     level: int = 3,
     budget: float = 5.0,
-    waha: bool = True,
+    telegram: bool = True,
 ) -> SessionConfig:
     """Create a session config directly without interactive prompts."""
     return SessionConfig(
         task=task,
         afk_level=level,
         budget_usd=budget,
-        waha_enabled=waha,
+        telegram_enabled=telegram,
     )

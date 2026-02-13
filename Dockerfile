@@ -1,19 +1,16 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install the Anthropic claude CLI - uncomment and adjust when available
-# RUN curl -fsSL https://claude.ai/install.sh | sh
-
 WORKDIR /app
 
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application
 COPY . .
 
+# Environment
 ENV PYTHONUNBUFFERED=1
 
-ENTRYPOINT ["python", "-m", "src.main"]
+# Run interactive setup on first start, then launch
+CMD ["python", "setup_interactive.py"]

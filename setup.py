@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Setup script for ClaudeGhost."""
-
-from setuptools import setup, find_packages
 from pathlib import Path
+from setuptools import setup, find_packages
 
 this_directory = Path(__file__).parent
 long_description = ""
@@ -12,16 +11,19 @@ if readme_path.exists():
 
 setup(
     name="claudeghost",
-    version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
-    description="Headless Supervisor for the Anthropic Claude CLI",
+    version="2.0.0",
+    description="Headless Supervisor for the Anthropic Claude CLI with Telegram notifications",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    author="ClaudeGhost Contributors",
+    author_email="",
     url="https://github.com/yourusername/ClaudeGhost",
     project_urls={
         "Bug Tracker": "https://github.com/yourusername/ClaudeGhost/issues",
+        "Documentation": "https://github.com/yourusername/ClaudeGhost#readme",
+        "Source Code": "https://github.com/yourusername/ClaudeGhost",
     },
+    keywords="claude ai automation telegram bot supervisor cli",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Environment :: Console",
@@ -45,15 +47,11 @@ setup(
         "python-dotenv>=1.0.0",
     ],
     extras_require={
-        "dev": [
-            "pytest>=7.4.0",
-            "black>=23.0.0",
-            "ruff>=0.1.0",
-        ],
+        "dev": ["pytest>=7.4.0"],
     },
     entry_points={
         "console_scripts": [
-            "claudeghost=src.launcher:main",
+            "claudeghost=src.main:main",
         ],
     },
     include_package_data=True,

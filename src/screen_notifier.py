@@ -1,7 +1,6 @@
-"""Screen-only notification handler for when WhatsApp is disabled."""
+"""Screen-only notification handler for when Telegram is disabled."""
 from __future__ import annotations
 
-import threading
 import queue
 from typing import Callable, Optional
 
@@ -15,11 +14,7 @@ console = Console()
 
 
 class ScreenNotifier:
-    """Handles approval requests via terminal when WhatsApp is disabled.
-
-    Uses a queue to manage approval requests from the bridge thread,
-    with responses processed in the main thread during the Live display loop.
-    """
+    """Handles approval requests via terminal when Telegram is disabled."""
 
     def __init__(self) -> None:
         self._pending_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -27,6 +22,7 @@ class ScreenNotifier:
         self._enabled = True
 
     def set_callback(self, callback: Callable[[str], None]) -> None:
+        """Set the response callback."""
         self._response_callback = callback
 
     def request_approval(self, message: str) -> None:
@@ -35,7 +31,9 @@ class ScreenNotifier:
             return
         self._pending_queue.put(("approval", message))
         logger.info("Screen approval queued")
-        ghost_status.add_log("[bold yellow]>>> APPROVAL NEEDED (see below) <<<[/bold yellow]")
+        ghost_status.add_log(
+            "[bold yellow]>>> APPROVAL NEEDED (see below) <<<[/bold yellow]"
+        )
 
     def send_info(self, message: str) -> None:
         """Queue an informational message."""
@@ -44,12 +42,11 @@ class ScreenNotifier:
         self._pending_queue.put(("info", message))
 
     def check_pending(self) -> bool:
-        """Check if there's a pending approval request.
-        Called from the main loop to see if we need to pause for input."""
+        """Check if there's a pending approval request."""
         return not self._pending_queue.empty()
 
     def process_pending(self) -> None:
-        """Process one pending request. Call this when Live display is paused."""
+        """Process one pending request (call when Live display is paused)."""
         if self._pending_queue.empty():
             return
 
@@ -59,7 +56,6 @@ class ScreenNotifier:
             console.print(Panel(message, title="Info", border_style="blue"))
             return
 
-        # Approval request
         console.print()
         console.print(Panel(
             message,
@@ -69,34 +65,26 @@ class ScreenNotifier:
         ))
         console.print()
         console.print("[bold]Options:[/bold]")
-        console.print("  [A] Approve - Allow this action")
-        console.print("  [B] Block   - Deny this action")
-        console.print("  [C] Context - Provide alternative instruction")
-        console.print("  [D] Detonate - Kill the process immediately")
+        console.print("  [A] Approve  [B] Block  [C] Context  [D] Detonate")
         console.print()
 
-        while True:
-            response = Prompt.ask(
-                "Your choice",
-                choices=["a", "A", "b", "B", "c", "C", "d", "D"],
-                show_choices=False,
-            )
-            response = response.upper()
+        response = Prompt.ask(
+            "Your choice",
+            choices=["a", "A", "b", "B", "c", "C", "d", "D"],
+            show_choices=False,
+        ).upper()
 
-            if response == "C":
-                context = Prompt.ask("Enter context/instruction")
-                response = f"C {context}"
-
-            break
+        if response == "C":
+            context = Prompt.ask("Enter context/instruction")
+            response = f"C {context}"
 
         ghost_status.add_log(f"[cyan]Screen response:[/cyan] {response[:30]}")
-
         if self._response_callback:
             self._response_callback(response)
 
     def disable(self) -> None:
+        """Disable and clear pending requests."""
         self._enabled = False
-        # Clear any pending
         while not self._pending_queue.empty():
             try:
                 self._pending_queue.get_nowait()

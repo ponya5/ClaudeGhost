@@ -1,15 +1,19 @@
 # ClaudeGhost
 
-**Headless Supervisor for the Anthropic Claude CLI** - Run Claude Code autonomously while staying in control via WhatsApp.
+[![Tests](https://github.com/yourusername/ClaudeGhost/actions/workflows/tests.yml/badge.svg)](https://github.com/yourusername/ClaudeGhost/actions/workflows/tests.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-ClaudeGhost wraps the `claude` CLI in a supervised shell, automatically approving safe operations based on your configured autonomy level while escalating risky commands to your phone for approval.
+**Headless Supervisor for the Anthropic Claude CLI** - Run Claude Code autonomously while staying in control via Telegram.
+
+ClaudeGhost wraps the `claude` CLI in a supervised shell, automatically approving safe operations based on your configured autonomy level while escalating risky commands to your phone for approval via **Telegram Bot API**.
 
 ---
 
 ## Features
 
 - **AFK Autonomy Levels (1-5)**: From paranoid (asks everything) to god mode (full auto)
-- **WhatsApp Integration**: Approve/block commands from your phone via WAHA
+- **Telegram Bot API**: Approve/block commands from your phone - free, unlimited, instant
 - **Risk Classification**: Commands categorized as Read-Only, Write, Execute, or Critical
 - **Budget Control**: Set spending limits with automatic pause on exceed
 - **Live Dashboard**: Rich terminal UI showing real-time status and logs
@@ -21,112 +25,105 @@ ClaudeGhost wraps the `claude` CLI in a supervised shell, automatically approvin
 ## Requirements
 
 - Python 3.10+
-- [Anthropic Claude CLI](https://docs.anthropic.com/claude-code/getting-started) installed and authenticated
-- [WAHA](https://github.com/devlikeapro/waha) (WhatsApp HTTP API) running locally or remotely
-- WhatsApp account linked to WAHA
+- [Anthropic Claude CLI](https://docs.anthropic.com/claude-code/getting-started) installed
+- Telegram account (for notifications)
 
 ---
 
 ## Installation
 
-### Quick Start
+See [docs/INSTALL.md](docs/INSTALL.md) for complete installation instructions.
+
+---
+
+## Quick Start (5 minutes)
+
+### 1. Clone & Install
 
 ```bash
 git clone https://github.com/yourusername/ClaudeGhost.git
 cd ClaudeGhost
-python install.py
-```
-
-### Manual Install
-
-```bash
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your settings
 ```
 
----
-
-## Configuration
-
-### Environment Variables (.env)
-
-```env
-WAHA_API_URL=http://localhost:3000
-WAHA_API_KEY=your-api-key-from-waha
-WAHA_SESSION=default
-TARGET_PHONE=14155551234@c.us
-DEFAULT_AFK_LEVEL=3
-MAX_BUDGET_USD=10.00
-```
-
-### Config Management CLI
+### 2. Setup Telegram Bot
 
 ```bash
-# Show current config
-python -m src.cli config show
+python setup_interactive.py
+```
 
-# Set values
-python -m src.cli config set phone 14155551234@c.us
-python -m src.cli config set waha-key abc123...
+Or manually:
+1. Message **@BotFather** on Telegram -> `/newbot`
+2. Copy the bot token
+3. Message your bot, get your chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates`
+4. Configure:
 
-# Test WAHA connection
+```bash
+cp .env.example .env
+# Edit .env with your token and chat_id
+```
+
+Full guide: [`docs/TELEGRAM_SETUP.md`](docs/TELEGRAM_SETUP.md)
+
+### 3. Test Connection
+
+```bash
 python -m src.cli config test
 ```
 
----
-
-## Usage
-
-### Basic Command
+### 4. Run
 
 ```bash
-python -m src.launcher "Build a REST API with FastAPI" --level 3
+python -m src.launcher "Create a hello world app" --level 3
 ```
 
-### AFK Autonomy Levels
-
-| Level | Name | Read-Only | Write | Execute | Critical |
-|-------|------|-----------|-------|---------|----------|
-| 1 | Paranoid | Ask | Ask | Ask | Ask |
-| 2 | Auditor | Auto | Ask | Ask | Ask |
-| 3 | Manager | Auto | Auto | Ask | Ask |
-| 4 | Director | Auto | Auto | Auto | Ask |
-| 5 | God Mode | Auto | Auto | Auto | Auto |
-
-### WhatsApp Commands
-
-When ClaudeGhost needs approval, reply with:
-
-| Command | Action |
-|---------|--------|
-| `A` | Approve the pending action |
-| `B` | Block/reject the action |
-| `C <text>` | Inject custom context/instruction |
-| `D` | Kill the entire process immediately |
+You'll receive Telegram notifications when approval is needed.
 
 ---
 
-## WAHA Setup
+## AFK Levels
 
-1. Pull WAHA Docker image:
-   ```bash
-   docker pull devlikeapro/waha
-   ```
+| Level | Name | Auto-Approves |
+|-------|------|---------------|
+| 1 | Paranoid | Nothing |
+| 2 | Auditor | Read-only |
+| 3 | Manager | Read + Write |
+| 4 | Director | Read + Write + Execute |
+| 5 | God Mode | Everything |
 
-2. Initialize (generates API key):
-   ```bash
-   docker run --rm -v ".:/app/env" devlikeapro/waha init-waha /app/env
-   ```
+---
 
-3. Run WAHA:
-   ```bash
-   docker run -it --env-file .env -p 3000:3000 --name waha devlikeapro/waha
-   ```
+## Telegram Commands
 
-4. Open http://localhost:3000/dashboard and link WhatsApp
+When approval is needed, reply with:
 
-See [WAHA Quick Start](https://waha.devlike.pro/docs/overview/quick-start/) for details.
+| Reply | Action |
+|-------|--------|
+| `A` | Approve |
+| `B` | Block |
+| `C <text>` | Send alternative instruction |
+| `D` | Kill process |
+
+---
+
+## CLI Reference
+
+```bash
+# Interactive mode
+python -m src.launcher
+
+# Quick mode
+python -m src.launcher "task" --level 3 --budget 10.00
+
+# Screen-only (no Telegram)
+python -m src.launcher "task" --no-telegram
+
+# Config management
+python -m src.cli config show
+python -m src.cli config set bot-token YOUR_TOKEN
+python -m src.cli config set chat-id YOUR_CHAT_ID
+python -m src.cli config test
+```
 
 ---
 
@@ -135,33 +132,30 @@ See [WAHA Quick Start](https://waha.devlike.pro/docs/overview/quick-start/) for 
 ```
 ClaudeGhost/
 ├── src/
-│   ├── main.py           # ClaudeGhost orchestrator
-│   ├── bridge.py         # PTY wrapper for claude CLI
-│   ├── guardian.py       # Risk evaluation & classification
-│   ├── waha.py           # WhatsApp HTTP client
-│   ├── config.py         # Settings management
-│   ├── utils.py          # Logger, dashboard UI
-│   ├── launcher.py       # CLI entry point
-│   └── cli.py            # Config management CLI
-├── .env.example
-├── config.yaml
+│   ├── main.py           # Orchestrator
+│   ├── bridge.py          # Claude CLI wrapper (PTY/subprocess)
+│   ├── guardian.py         # Risk classification engine
+│   ├── telegram_bot.py     # Telegram Bot API client
+│   ├── screen_notifier.py  # Terminal-only fallback
+│   ├── config.py           # Settings (pydantic)
+│   ├── launcher.py         # Interactive launcher
+│   ├── cli.py              # CLI utilities
+│   └── utils.py            # Logging, stats, TUI dashboard
+├── tests/                  # Test suite
+├── docs/                   # Documentation
+├── .env.example            # Config template
 ├── requirements.txt
-├── install.py
-├── README.md
-└── MANUAL.md
+└── setup.py
 ```
 
 ---
 
-## Security
+## Contributing
 
-- **Never commit `.env`** - it contains your API keys
-- ClaudeGhost runs with your shell permissions
-- Critical commands require approval unless Level 5
-- Budget limits prevent runaway API costs
+Contributions are welcome! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## License
 
-MIT License
+MIT

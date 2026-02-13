@@ -1,3 +1,4 @@
+"""Shared utilities: logging, stats, and Rich TUI dashboard."""
 from __future__ import annotations
 
 import logging
@@ -5,15 +6,12 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Optional
 
 from rich.console import Console
 from rich.layout import Layout
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 from rich.text import Text
-
 
 console = Console()
 
@@ -40,8 +38,8 @@ class SessionStats:
         self.queries_user_approved: int = 0
         self.queries_blocked: int = 0
         self.commands_executed: int = 0
-        self.waha_messages_sent: int = 0
-        self.waha_messages_received: int = 0
+        self.telegram_sent: int = 0
+        self.telegram_received: int = 0
 
     def record_auto_approve(self) -> None:
         with self._lock:
@@ -60,13 +58,13 @@ class SessionStats:
             self.queries_total += 1
             self.queries_blocked += 1
 
-    def record_waha_sent(self) -> None:
+    def record_telegram_sent(self) -> None:
         with self._lock:
-            self.waha_messages_sent += 1
+            self.telegram_sent += 1
 
-    def record_waha_received(self) -> None:
+    def record_telegram_received(self) -> None:
         with self._lock:
-            self.waha_messages_received += 1
+            self.telegram_received += 1
 
     @property
     def elapsed_seconds(self) -> float:
@@ -79,7 +77,7 @@ class SessionStats:
         hours, mins = divmod(mins, 60)
         if hours:
             return f"{hours}h {mins}m {secs}s"
-        elif mins:
+        if mins:
             return f"{mins}m {secs}s"
         return f"{secs}s"
 
@@ -94,9 +92,8 @@ class GhostStatus:
         self.level_name: str = "Manager"
         self.budget_used: float = 0.0
         self.budget_max: float = 5.0
-        self.last_waha_msg: str = "-"
         self.state: str = "STARTING"
-        self.waha_enabled: bool = True
+        self.telegram_enabled: bool = True
         self.stats: SessionStats = SessionStats()
         self._log_lines: list[str] = []
 
@@ -106,7 +103,6 @@ class GhostStatus:
             self._log_lines = []
         self.state = "STARTING"
         self.budget_used = 0.0
-        self.last_waha_msg = "-"
         self.stats = SessionStats()
 
     def add_log(self, msg: str) -> None:
@@ -142,30 +138,37 @@ class GhostStatus:
         # Status panel
         status_tbl = Table.grid(padding=(0, 1))
         state_color = {
-            "RUNNING": "green",
-            "THINKING": "cyan",
-            "QUERY": "yellow",
-            "WAITING": "yellow",
-            "BUDGET_PAUSE": "red",
-            "EXITED": "dim",
+            "RUNNING": "green", "THINKING": "cyan",
+            "QUERY": "yellow", "WAITING": "yellow",
+            "BUDGET_PAUSE": "red", "EXITED": "dim",
         }.get(self.state, "white")
 
-        status_tbl.add_row("State:", f"[bold {state_color}]{self.state}[/bold {state_color}]")
-        status_tbl.add_row("Task:", _safe_markup(self.current_task[:50]))
-        status_tbl.add_row("AFK Level:", f"{self.afk_level} ({self.level_name})")
-
-        budget_pct = (self.budget_used / self.budget_max * 100) if self.budget_max > 0 else 0
-        budget_color = "green" if budget_pct < 70 else "yellow" if budget_pct < 90 else "red"
         status_tbl.add_row(
-            "Budget:",
-            f"[{budget_color}]${self.budget_used:.2f}[/{budget_color}] / ${self.budget_max:.2f} ({budget_pct:.0f}%)"
+            "State:",
+            f"[bold {state_color}]{self.state}[/bold {state_color}]",
+        )
+        status_tbl.add_row("Task:", _safe_markup(self.current_task[:50]))
+        status_tbl.add_row(
+            "AFK Level:", f"{self.afk_level} ({self.level_name})"
         )
 
-        comm_mode = "[green]WhatsApp[/green]" if self.waha_enabled else "[cyan]Screen Only[/cyan]"
-        status_tbl.add_row("Notify:", comm_mode)
+        budget_pct = (
+            (self.budget_used / self.budget_max * 100)
+            if self.budget_max > 0 else 0
+        )
+        bc = "green" if budget_pct < 70 else "yellow" if budget_pct < 90 else "red"
+        status_tbl.add_row(
+            "Budget:",
+            f"[{bc}]${self.budget_used:.2f}[/{bc}]"
+            f" / ${self.budget_max:.2f} ({budget_pct:.0f}%)",
+        )
 
-        if self.waha_enabled:
-            status_tbl.add_row("Last Msg:", _safe_markup(self.last_waha_msg[:35]))
+        mode = (
+            "[green]Telegram[/green]"
+            if self.telegram_enabled
+            else "[cyan]Screen Only[/cyan]"
+        )
+        status_tbl.add_row("Notify:", mode)
 
         layout["status"].update(
             Panel(status_tbl, title="Session Status", border_style="green")
@@ -173,31 +176,30 @@ class GhostStatus:
 
         # Stats panel
         stats_tbl = Table.grid(padding=(0, 1))
-        stats_tbl.add_row("Elapsed:", f"[bold]{self.stats.elapsed_formatted}[/bold]")
+        stats_tbl.add_row(
+            "Elapsed:", f"[bold]{self.stats.elapsed_formatted}[/bold]"
+        )
         stats_tbl.add_row("Queries:", str(self.stats.queries_total))
         stats_tbl.add_row(
-            "  Auto-approved:",
-            f"[green]{self.stats.queries_auto_approved}[/green]"
+            "  Auto:", f"[green]{self.stats.queries_auto_approved}[/green]"
         )
         stats_tbl.add_row(
-            "  User-approved:",
-            f"[yellow]{self.stats.queries_user_approved}[/yellow]"
+            "  User:", f"[yellow]{self.stats.queries_user_approved}[/yellow]"
         )
         stats_tbl.add_row(
-            "  Blocked:",
-            f"[red]{self.stats.queries_blocked}[/red]"
+            "  Blocked:", f"[red]{self.stats.queries_blocked}[/red]"
         )
-        stats_tbl.add_row("Commands Run:", str(self.stats.commands_executed))
-        if self.waha_enabled:
+        stats_tbl.add_row("Commands:", str(self.stats.commands_executed))
+        if self.telegram_enabled:
             stats_tbl.add_row(
-                "WAHA I/O:",
-                f"{self.stats.waha_messages_sent} / {self.stats.waha_messages_received}"
+                "Telegram I/O:",
+                f"{self.stats.telegram_sent}"
+                f" / {self.stats.telegram_received}",
             )
 
         layout["stats"].update(
             Panel(stats_tbl, title="Statistics", border_style="magenta")
         )
-
         return layout
 
 

@@ -34,6 +34,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
@@ -58,5 +59,17 @@ logs/
 .DS_Store
 Thumbs.db
 
-# WAHA generated files (keep .env.example)
-waha.env
+# Session data
+sessions/
+*.session
+session_*.json
+last_session.json
+
+# Test outputs
+hello.txt
+daniel.md
+test_*.txt
+demo_*.txt
+
+# User config
+.claudeghost/

@@ -1,4 +1,4 @@
-"""ClaudeGhost - Headless Supervisor for the Anthropic claude CLI."""
+"""ClaudeGhost - Headless Supervisor for the Anthropic Claude CLI."""
 from __future__ import annotations
 
 import argparse
@@ -11,15 +11,9 @@ from typing import Optional
 from rich.live import Live
 
 from src.bridge import GhostBridge, CliState
-from src.guardian import (
-    Decision,
-    RiskCategory,
-    evaluate,
-    extract_command_from_query,
-    format_approval_message,
-)
-from src.config import settings, SessionConfig, LEVEL_NAMES
-from src.waha import WahaClient
+from src.guardian import Decision, evaluate, extract_command_from_query, format_approval_message
+from src.config import settings, SessionConfig
+from src.telegram_bot import TelegramBot
 from src.screen_notifier import ScreenNotifier
 from src.utils import logger, ghost_status, console
 from src.launcher import run_interactive_launcher, run_quick_launcher
@@ -33,12 +27,11 @@ class ClaudeGhost:
         self.task = config.task
         self.afk_level = config.afk_level
 
-        # Choose notification medium
-        self._waha: Optional[WahaClient] = None
+        self._telegram: Optional[TelegramBot] = None
         self._screen: Optional[ScreenNotifier] = None
 
-        if config.waha_enabled:
-            self._waha = WahaClient()
+        if config.telegram_enabled:
+            self._telegram = TelegramBot()
         else:
             self._screen = ScreenNotifier()
 
@@ -48,16 +41,15 @@ class ClaudeGhost:
         self._budget_warned = False
         self._shutdown = threading.Event()
 
-        # Setup ghost_status
         ghost_status.reset()
         ghost_status.current_task = config.task
         ghost_status.afk_level = config.afk_level
         ghost_status.level_name = config.level_name
         ghost_status.budget_max = config.budget_usd
-        ghost_status.waha_enabled = config.waha_enabled
+        ghost_status.telegram_enabled = config.telegram_enabled
 
     def run(self) -> None:
-        # Update settings for this session
+        """Start the supervised session."""
         settings.max_budget_usd = self.config.budget_usd
         settings.working_directory = self.config.working_directory
 
@@ -68,9 +60,8 @@ class ClaudeGhost:
             on_stall=self._handle_stall,
         )
 
-        # Start notification medium
-        if self._waha:
-            self._waha.start_polling(self._handle_reply)
+        if self._telegram:
+            self._telegram.start_polling(self._handle_reply)
             self._notify(
                 f"ClaudeGhost started\n"
                 f"Task: {self.task}\n"
@@ -83,10 +74,9 @@ class ClaudeGhost:
         self._bridge.start()
         ghost_status.state = "RUNNING"
 
-        # Graceful CTRL+C
         original_sigint = signal.getsignal(signal.SIGINT)
 
-        def _on_sigint(signum: int, frame: object) -> None:
+        def _on_sigint(_signum: int, _frame: object) -> None:
             logger.info("SIGINT received, shutting down...")
             self._shutdown.set()
 
@@ -99,18 +89,15 @@ class ClaudeGhost:
 
         if self._bridge.state != CliState.EXITED:
             self._bridge.kill()
-
-        if self._waha:
-            self._waha.stop_polling()
+        if self._telegram:
+            self._telegram.stop_polling()
         if self._screen:
             self._screen.disable()
 
         self._send_summary()
 
     def _run_loop(self) -> None:
-        """Main event loop with Live display."""
         assert self._bridge is not None
-
         with Live(
             ghost_status.build_layout(),
             console=console,
@@ -121,38 +108,32 @@ class ClaudeGhost:
                 self._bridge.state != CliState.EXITED
                 and not self._shutdown.is_set()
             ):
-                # Check for screen-based approval requests
                 if self._screen and self._screen.check_pending():
                     live.stop()
                     self._screen.process_pending()
                     live.start()
-
                 live.update(ghost_status.build_layout())
                 self._check_budget()
                 time.sleep(0.5)
 
-    # ------------------------------------------------------------------
-    # Notification helpers
-    # ------------------------------------------------------------------
+    # -- Notification helpers ------------------------------------------------
+
     def _notify(self, message: str) -> None:
-        """Send notification via the active medium."""
-        if self._waha:
-            self._waha.send(message)
-            ghost_status.stats.record_waha_sent()
+        if self._telegram:
+            self._telegram.send(message)
+            ghost_status.stats.record_telegram_sent()
         elif self._screen:
             self._screen.send_info(message)
 
     def _request_approval(self, message: str) -> None:
-        """Request approval via the active medium."""
-        if self._waha:
-            self._waha.send(message)
-            ghost_status.stats.record_waha_sent()
+        if self._telegram:
+            self._telegram.send(message)
+            ghost_status.stats.record_telegram_sent()
         elif self._screen:
             self._screen.request_approval(message)
 
-    # ------------------------------------------------------------------
-    # Query handling (called from bridge reader thread)
-    # ------------------------------------------------------------------
+    # -- Query handling ------------------------------------------------------
+
     def _handle_query(self, query_text: str) -> None:
         command = extract_command_from_query(query_text)
         if not command:
@@ -161,7 +142,9 @@ class ClaudeGhost:
         decision, category = evaluate(command, self.afk_level)
 
         if decision == Decision.AUTO_APPROVE:
-            ghost_status.add_log(f"[green]Auto-approved:[/green] {command[:60]}")
+            ghost_status.add_log(
+                f"[green]Auto-approved:[/green] {command[:60]}"
+            )
             ghost_status.stats.record_auto_approve()
             if self.afk_level == 5:
                 self._notify(f"Auto-approved (God Mode): {command[:200]}")
@@ -173,20 +156,18 @@ class ClaudeGhost:
             with self._pending_lock:
                 self._pending_query = command
             ghost_status.state = "WAITING"
-            mode = "WhatsApp" if self._waha else "screen"
+            mode = "Telegram" if self._telegram else "screen"
             ghost_status.add_log(
                 f"[bold yellow]Waiting for {mode} reply...[/bold yellow]"
             )
 
-    # ------------------------------------------------------------------
-    # Reply handling (called from WAHA poll thread or screen notifier)
-    # ------------------------------------------------------------------
+    # -- Reply handling ------------------------------------------------------
+
     def _handle_reply(self, body: str) -> None:
         if self._bridge is None:
             return
-
-        if self._waha:
-            ghost_status.stats.record_waha_received()
+        if self._telegram:
+            ghost_status.stats.record_telegram_received()
 
         reply = body.strip()
         first_char = reply[0].upper() if reply else ""
@@ -212,7 +193,9 @@ class ClaudeGhost:
             ghost_status.state = "RUNNING"
 
         elif first_char == "D":
-            ghost_status.add_log("[bold red]DETONATE - killing process.[/bold red]")
+            ghost_status.add_log(
+                "[bold red]DETONATE - killing process.[/bold red]"
+            )
             self._notify("Process killed by user.")
             self._bridge.kill()
             with self._pending_lock:
@@ -222,7 +205,9 @@ class ClaudeGhost:
             context = reply
             if first_char == "C" and len(reply) > 1:
                 context = reply[1:].strip()
-            ghost_status.add_log(f"[cyan]Context injected:[/cyan] {context[:60]}")
+            ghost_status.add_log(
+                f"[cyan]Context injected:[/cyan] {context[:60]}"
+            )
             self._bridge.send(context)
             with self._pending_lock:
                 self._pending_query = None
@@ -231,21 +216,18 @@ class ClaudeGhost:
         else:
             self._notify(
                 "Unknown reply. Use:\n"
-                "[A] Approve\n"
-                "[B] Block\n"
-                "[C <text>] Context\n"
-                "[D] Detonate"
+                "[A] Approve\n[B] Block\n"
+                "[C <text>] Context\n[D] Detonate"
             )
 
-    # ------------------------------------------------------------------
-    # Other callbacks
-    # ------------------------------------------------------------------
+    # -- Other callbacks -----------------------------------------------------
+
     def _handle_idle(self) -> None:
         ghost_status.add_log("[dim]CLI is idle.[/dim]")
 
     def _handle_stall(self) -> None:
         self._notify(
-            f"Stall detected - no CLI output for "
+            f"Stall detected - no output for "
             f"{settings.heartbeat_timeout_seconds:.0f}s.\n"
             f"The process may be hanging."
         )
@@ -255,48 +237,39 @@ class ClaudeGhost:
             return
         if self._bridge.total_cost > self.config.budget_usd:
             self._budget_warned = True
-            logger.warning(
-                "Budget exceeded: $%.2f > $%.2f",
-                self._bridge.total_cost, self.config.budget_usd,
-            )
             ghost_status.add_log("[bold red]BUDGET EXCEEDED[/bold red]")
             ghost_status.state = "BUDGET_PAUSE"
             self._request_approval(
                 f"BUDGET EXCEEDED\n"
-                f"Used: ${self._bridge.total_cost:.2f} / "
-                f"${self.config.budget_usd:.2f}\n"
+                f"Used: ${self._bridge.total_cost:.2f}"
+                f" / ${self.config.budget_usd:.2f}\n"
                 f"Reply [A] to continue or [D] to kill."
             )
 
     def _send_summary(self) -> None:
         assert self._bridge is not None
-        stats = ghost_status.stats
-
+        s = ghost_status.stats
         summary = (
             f"ClaudeGhost session ended\n"
             f"Task: {self.task}\n"
-            f"Duration: {stats.elapsed_formatted}\n"
-            f"Total cost: ${self._bridge.total_cost:.2f}\n"
-            f"Queries: {stats.queries_total} "
-            f"(auto: {stats.queries_auto_approved}, "
-            f"user: {stats.queries_user_approved}, "
-            f"blocked: {stats.queries_blocked})\n"
-            f"Commands executed: {stats.commands_executed}\n"
-            f"Final state: {self._bridge.state.value}"
+            f"Duration: {s.elapsed_formatted}\n"
+            f"Cost: ${self._bridge.total_cost:.2f}\n"
+            f"Queries: {s.queries_total} "
+            f"(auto:{s.queries_auto_approved} "
+            f"user:{s.queries_user_approved} "
+            f"blocked:{s.queries_blocked})\n"
+            f"Commands: {s.commands_executed}"
         )
         self._notify(summary)
         ghost_status.add_log("[bold green]Session complete.[/bold green]")
-
-        # Print final summary to console
         console.print()
-        console.print(f"[bold green]Session Complete[/bold green]")
-        console.print(f"  Duration: {stats.elapsed_formatted}")
-        console.print(f"  Cost: ${self._bridge.total_cost:.2f} / ${self.config.budget_usd:.2f}")
-        console.print(f"  Queries: {stats.queries_total} total")
-        console.print(f"    - Auto-approved: {stats.queries_auto_approved}")
-        console.print(f"    - User-approved: {stats.queries_user_approved}")
-        console.print(f"    - Blocked: {stats.queries_blocked}")
-        console.print(f"  Commands executed: {stats.commands_executed}")
+        console.print("[bold green]Session Complete[/bold green]")
+        console.print(f"  Duration: {s.elapsed_formatted}")
+        console.print(
+            f"  Cost: ${self._bridge.total_cost:.2f}"
+            f" / ${self.config.budget_usd:.2f}"
+        )
+        console.print(f"  Queries: {s.queries_total} total")
 
     @staticmethod
     def _fallback_command(query_text: str) -> str:
@@ -311,59 +284,48 @@ class ClaudeGhost:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="claudeghost",
-        description="Headless Supervisor for the Anthropic claude CLI",
+        description="Headless Supervisor for the Anthropic Claude CLI",
     )
     parser.add_argument(
-        "task",
-        nargs="?",
-        default=None,
-        help="The task/prompt to send to claude (omit for interactive mode)"
+        "task", nargs="?", default=None,
+        help="Task/prompt for claude (omit for interactive mode)",
     )
     parser.add_argument(
-        "--level", "-l",
-        type=int,
-        default=None,
+        "--level", "-l", type=int, default=None,
         choices=[1, 2, 3, 4, 5],
-        help="AFK autonomy level (1=Paranoid .. 5=God Mode)",
+        help="AFK autonomy level (1-5)",
     )
     parser.add_argument(
-        "--budget", "-b",
-        type=float,
-        default=None,
+        "--budget", "-b", type=float, default=None,
         help="Budget limit in USD",
     )
     parser.add_argument(
-        "--no-waha",
-        action="store_true",
-        help="Disable WhatsApp, use screen-only notifications",
+        "--no-telegram", action="store_true",
+        help="Disable Telegram, use screen-only notifications",
     )
     parser.add_argument(
-        "--interactive", "-i",
-        action="store_true",
-        help="Force interactive mode even if task is provided",
+        "--interactive", "-i", action="store_true",
+        help="Force interactive mode",
     )
     args = parser.parse_args()
 
-    # Determine mode
     if args.interactive or args.task is None:
-        # Interactive launcher
         config = run_interactive_launcher()
         if config is None:
             sys.exit(0)
     else:
-        # Quick mode with CLI args
         config = run_quick_launcher(
             task=args.task,
             level=args.level or settings.default_afk_level,
             budget=args.budget or settings.max_budget_usd,
-            waha=not args.no_waha,
+            telegram=not args.no_telegram,
         )
-        # Show quick summary
-        console.print("[bold blue]ClaudeGhost v1.0[/bold blue]")
+        console.print("[bold blue]ClaudeGhost v2.0[/bold blue]")
         console.print(f"  Task  : {config.task[:60]}")
         console.print(f"  Level : {config.afk_level} ({config.level_name})")
         console.print(f"  Budget: ${config.budget_usd:.2f}")
-        console.print(f"  Notify: {'WhatsApp' if config.waha_enabled else 'Screen'}")
+        notify = "Telegram" if config.telegram_enabled else "Screen"
+        console.print(f"  Notify: {notify}")
         console.print()
 
     ghost = ClaudeGhost(config=config)

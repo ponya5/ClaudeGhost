@@ -1,3 +1,4 @@
+"""ClaudeGhost configuration module."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,11 +7,8 @@ from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-
-# Budget presets (in USD)
 BUDGET_PRESETS: dict[str, float] = {
     "micro": 0.50,
     "small": 2.00,
@@ -38,17 +36,18 @@ LEVEL_DESCRIPTIONS: dict[int, str] = {
 
 
 class Settings(BaseSettings):
+    """Global application settings loaded from .env and environment."""
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE) if _ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
-    # WAHA / WhatsApp
-    waha_api_url: str = Field(default="http://localhost:3000")
-    waha_api_key: str = Field(default="")
-    waha_session: str = Field(default="default")
-    target_phone: str = Field(default="1234567890@c.us")
-    waha_enabled: bool = Field(default=True)
+    # Telegram Bot API
+    telegram_bot_token: str = Field(default="")
+    telegram_chat_id: str = Field(default="")
+    telegram_enabled: bool = Field(default=True)
 
     # Autonomy
     default_afk_level: int = Field(default=3, ge=1, le=5)
@@ -70,21 +69,20 @@ settings = Settings()
 
 
 class SessionConfig:
-    """Runtime configuration for a single ClaudeGhost session.
-    Allows overriding settings per-task without modifying the global settings."""
+    """Runtime configuration for a single ClaudeGhost session."""
 
     def __init__(
         self,
         task: str,
         afk_level: int = 3,
         budget_usd: float = 5.0,
-        waha_enabled: bool = True,
+        telegram_enabled: bool = True,
         working_directory: Optional[str] = None,
     ) -> None:
         self.task = task
         self.afk_level = max(1, min(5, afk_level))
         self.budget_usd = budget_usd
-        self.waha_enabled = waha_enabled
+        self.telegram_enabled = telegram_enabled
         self.working_directory = working_directory or settings.working_directory
 
     @property

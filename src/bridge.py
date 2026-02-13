@@ -21,11 +21,9 @@ try:
 except ImportError:
     _USE_PEXPECT = False
 
-if sys.platform == "win32" and _USE_PEXPECT:
-    try:
-        import pexpect.popen_spawn  # noqa: F401  Windows shim
-    except Exception:
-        _USE_PEXPECT = False
+# On Windows, always use subprocess for better compatibility with .cmd files
+if sys.platform == "win32":
+    _USE_PEXPECT = False
 
 # ---------------------------------------------------------------------------
 # ANSI cleaner
@@ -187,6 +185,8 @@ class GhostBridge:
             )
 
     def _start_subprocess(self, binary: str, cwd: str) -> None:
+        # On Windows, .cmd files need shell=True to execute properly
+        use_shell = sys.platform == "win32"
         self._child = subprocess.Popen(
             [binary, self.task],
             stdin=subprocess.PIPE,
@@ -195,6 +195,7 @@ class GhostBridge:
             text=True,
             bufsize=1,
             cwd=cwd if cwd != "." else None,
+            shell=use_shell,
         )
 
     # ------------------------------------------------------------------
