@@ -175,6 +175,8 @@ ClaudeGhost checks for updates on startup. If a new version is available, you'll
 python -m src.updater
 ```
 
+No GitHub Releases needed - it compares your local repo with the remote. Just `git push` and users get notified automatically.
+
 ---
 
 ## Project Structure
