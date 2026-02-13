@@ -1,0 +1,133 @@
+"""Changelog tracking for ClaudeGhost sessions."""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+from src.utils import logger
+
+
+class ChangeLog:
+    """Track and save changes made during a ClaudeGhost session."""
+
+    def __init__(self, task: str, session_id: str):
+        self.task = task
+        self.session_id = session_id
+        self.changes: List[str] = []
+        self.commands_executed: List[str] = []
+        self.files_modified: List[str] = []
+        self.start_time = datetime.now()
+        self.end_time: Optional[datetime] = None
+
+    def add_command(self, command: str) -> None:
+        """Record a command that was executed."""
+        self.commands_executed.append(command)
+
+    def add_file_change(self, filepath: str) -> None:
+        """Record a file that was modified."""
+        if filepath not in self.files_modified:
+            self.files_modified.append(filepath)
+
+    def add_change(self, description: str) -> None:
+        """Add a general change description."""
+        self.changes.append(description)
+
+    def finalize(self) -> None:
+        """Mark the session as complete."""
+        self.end_time = datetime.now()
+
+    def save(self, output_dir: str = "session_logs") -> str:
+        """Save changelog to a file and return the filepath."""
+        # Create output directory
+        log_dir = Path(output_dir)
+        log_dir.mkdir(exist_ok=True)
+
+        # Generate filename
+        timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
+        filename = f"session_{timestamp}_{self.session_id[:8]}.txt"
+        filepath = log_dir / filename
+
+        # Build changelog content
+        duration = "Unknown"
+        if self.end_time:
+            delta = self.end_time - self.start_time
+            minutes = int(delta.total_seconds() / 60)
+            seconds = int(delta.total_seconds() % 60)
+            duration = f"{minutes}m {seconds}s"
+
+        content = self._build_changelog_content(duration)
+
+        # Write to file
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info("Changelog saved to %s", filepath)
+            return str(filepath.absolute())
+        except Exception as e:
+            logger.error("Failed to save changelog: %s", e)
+            return ""
+
+    def _build_changelog_content(self, duration: str) -> str:
+        """Build the formatted changelog content."""
+        lines = []
+        lines.append("=" * 70)
+        lines.append("ClaudeGhost Session Changelog")
+        lines.append("=" * 70)
+        lines.append("")
+        lines.append(f"Session ID: {self.session_id}")
+        lines.append(f"Task: {self.task}")
+        lines.append(f"Started: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        if self.end_time:
+            lines.append(
+                f"Ended: {self.end_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        lines.append(f"Duration: {duration}")
+        lines.append("")
+
+        # Files Modified
+        lines.append("-" * 70)
+        lines.append(f"Files Modified ({len(self.files_modified)})")
+        lines.append("-" * 70)
+        if self.files_modified:
+            for filepath in self.files_modified:
+                lines.append(f"  • {filepath}")
+        else:
+            lines.append("  (No files modified)")
+        lines.append("")
+
+        # Commands Executed
+        lines.append("-" * 70)
+        lines.append(f"Commands Executed ({len(self.commands_executed)})")
+        lines.append("-" * 70)
+        if self.commands_executed:
+            for i, cmd in enumerate(self.commands_executed, 1):
+                lines.append(f"  {i}. {cmd}")
+        else:
+            lines.append("  (No commands executed)")
+        lines.append("")
+
+        # General Changes
+        if self.changes:
+            lines.append("-" * 70)
+            lines.append("Changes Summary")
+            lines.append("-" * 70)
+            for change in self.changes:
+                lines.append(f"  • {change}")
+            lines.append("")
+
+        lines.append("=" * 70)
+        lines.append("End of Changelog")
+        lines.append("=" * 70)
+
+        return "\n".join(lines)
+
+    def get_summary(self) -> str:
+        """Get a brief summary for Telegram notification."""
+        summary_lines = [
+            f"📝 Session Complete",
+            f"Files modified: {len(self.files_modified)}",
+            f"Commands executed: {len(self.commands_executed)}",
+        ]
+        return "\n".join(summary_lines)

@@ -36,13 +36,12 @@ The wizard will guide you through:
 **Or manually:**
 1. Open Telegram, search for `@BotFather`
 2. Send `/newbot` and follow prompts
-3. Copy your bot token
-4. Message your bot, then visit: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-5. Copy your chat ID from the response
-6. Configure:
+3. Copy your bot token (FULL token including colon, e.g., `1234567890:ABCdef...`)
+4. Message your bot, then get your chat ID from `@userinfobot`
+5. Configure:
    ```bash
    cp .env.example .env
-   # Edit .env with your token and chat_id
+   # Edit .env with your FULL token and chat_id
    ```
 
 ### Step 3: Test Installation

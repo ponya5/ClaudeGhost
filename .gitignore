@@ -64,6 +64,7 @@ sessions/
 *.session
 session_*.json
 last_session.json
+session_logs/
 
 # Test outputs
 hello.txt

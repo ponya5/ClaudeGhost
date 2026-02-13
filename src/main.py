@@ -6,17 +6,26 @@ import signal
 import sys
 import time
 import threading
+import uuid
 from typing import Optional
 
 from rich.live import Live
+from rich.prompt import Confirm
 
 from src.bridge import GhostBridge, CliState
-from src.guardian import Decision, evaluate, extract_command_from_query, format_approval_message
+from src.guardian import (
+    Decision,
+    evaluate,
+    extract_command_from_query,
+    format_approval_message,
+)
 from src.config import settings, SessionConfig
 from src.telegram_bot import TelegramBot
 from src.screen_notifier import ScreenNotifier
 from src.utils import logger, ghost_status, console
 from src.launcher import run_interactive_launcher, run_quick_launcher
+from src.changelog import ChangeLog
+from src.updater import check_for_updates, print_update_notification
 
 
 class ClaudeGhost:
@@ -26,6 +35,7 @@ class ClaudeGhost:
         self.config = config
         self.task = config.task
         self.afk_level = config.afk_level
+        self.session_id = str(uuid.uuid4())
 
         self._telegram: Optional[TelegramBot] = None
         self._screen: Optional[ScreenNotifier] = None
@@ -40,6 +50,7 @@ class ClaudeGhost:
         self._pending_lock = threading.Lock()
         self._budget_warned = False
         self._shutdown = threading.Event()
+        self._changelog = ChangeLog(config.task, self.session_id)
 
         ghost_status.reset()
         ghost_status.current_task = config.task
@@ -146,6 +157,7 @@ class ClaudeGhost:
                 f"[green]Auto-approved:[/green] {command[:60]}"
             )
             ghost_status.stats.record_auto_approve()
+            self._changelog.add_command(command)
             if self.afk_level == 5:
                 self._notify(f"Auto-approved (God Mode): {command[:200]}")
             assert self._bridge is not None
@@ -178,9 +190,11 @@ class ClaudeGhost:
         if first_char == "A":
             ghost_status.add_log("[green]User APPROVED.[/green]")
             ghost_status.stats.record_user_approve()
-            self._bridge.send("y")
             with self._pending_lock:
+                if self._pending_query:
+                    self._changelog.add_command(self._pending_query)
                 self._pending_query = None
+            self._bridge.send("y")
             self._budget_warned = False
             ghost_status.state = "RUNNING"
 
@@ -249,6 +263,11 @@ class ClaudeGhost:
     def _send_summary(self) -> None:
         assert self._bridge is not None
         s = ghost_status.stats
+        
+        # Finalize and save changelog
+        self._changelog.finalize()
+        changelog_path = self._changelog.save()
+        
         summary = (
             f"ClaudeGhost session ended\n"
             f"Task: {self.task}\n"
@@ -258,8 +277,13 @@ class ClaudeGhost:
             f"(auto:{s.queries_auto_approved} "
             f"user:{s.queries_user_approved} "
             f"blocked:{s.queries_blocked})\n"
-            f"Commands: {s.commands_executed}"
+            f"Commands: {s.commands_executed}\n"
+            f"\n{self._changelog.get_summary()}"
         )
+        
+        if changelog_path:
+            summary += f"\n\n📄 Full changelog: {changelog_path}"
+        
         self._notify(summary)
         ghost_status.add_log("[bold green]Session complete.[/bold green]")
         console.print()
@@ -270,6 +294,11 @@ class ClaudeGhost:
             f" / ${self.config.budget_usd:.2f}"
         )
         console.print(f"  Queries: {s.queries_total} total")
+        
+        if changelog_path:
+            console.print(
+                f"\n[cyan]📄 Changelog saved:[/cyan] {changelog_path}"
+            )
 
     @staticmethod
     def _fallback_command(query_text: str) -> str:
@@ -282,6 +311,7 @@ class ClaudeGhost:
 
 
 def main() -> None:
+    """Main entry point with session loop and update checker."""
     parser = argparse.ArgumentParser(
         prog="claudeghost",
         description="Headless Supervisor for the Anthropic Claude CLI",
@@ -309,27 +339,55 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.interactive or args.task is None:
-        config = run_interactive_launcher()
-        if config is None:
-            sys.exit(0)
-    else:
-        config = run_quick_launcher(
-            task=args.task,
-            level=args.level or settings.default_afk_level,
-            budget=args.budget or settings.max_budget_usd,
-            telegram=not args.no_telegram,
-        )
-        console.print("[bold blue]ClaudeGhost v2.0[/bold blue]")
-        console.print(f"  Task  : {config.task[:60]}")
-        console.print(f"  Level : {config.afk_level} ({config.level_name})")
-        console.print(f"  Budget: ${config.budget_usd:.2f}")
-        notify = "Telegram" if config.telegram_enabled else "Screen"
-        console.print(f"  Notify: {notify}")
+    # Check for updates
+    update_available, latest_version = check_for_updates()
+    if update_available and latest_version:
+        print_update_notification(latest_version)
         console.print()
 
-    ghost = ClaudeGhost(config=config)
-    ghost.run()
+    # Session loop
+    while True:
+        if args.interactive or args.task is None:
+            config = run_interactive_launcher()
+            if config is None:
+                sys.exit(0)
+        else:
+            config = run_quick_launcher(
+                task=args.task,
+                level=args.level or settings.default_afk_level,
+                budget=args.budget or settings.max_budget_usd,
+                telegram=not args.no_telegram,
+            )
+            console.print("[bold blue]ClaudeGhost v2.0[/bold blue]")
+            console.print(f"  Task  : {config.task[:60]}")
+            console.print(f"  Level : {config.afk_level} ({config.level_name})")
+            console.print(f"  Budget: ${config.budget_usd:.2f}")
+            notify = "Telegram" if config.telegram_enabled else "Screen"
+            console.print(f"  Notify: {notify}")
+            console.print()
+
+        # Run session
+        ghost = ClaudeGhost(config=config)
+        ghost.run()
+
+        # Ask if user wants another session
+        console.print()
+        try:
+            another = Confirm.ask(
+                "[bold]Start another session?[/bold]",
+                default=False
+            )
+            if not another:
+                console.print("[green]Goodbye![/green]")
+                break
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Goodbye![/yellow]")
+            break
+
+        # Reset args for next session (force interactive)
+        args.task = None
+        args.interactive = True
+        console.print()
 
 
 if __name__ == "__main__":

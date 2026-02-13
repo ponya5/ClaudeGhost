@@ -19,18 +19,35 @@
 5. BotFather replies with your **bot token**:
    ```
    Use this token to access the HTTP API:
-   123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789
    ```
-6. **Copy the token** - you'll need it for `.env`
+6. **IMPORTANT: Copy the ENTIRE token** (including the colon and everything after it)
+   - ✅ Correct: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789`
+   - ❌ Wrong: `1234567890` (missing the part after colon)
 
 ---
 
 ## Step 2: Get Your Chat ID (2 minutes)
 
-1. Open your new bot in Telegram and send it any message (e.g., "hello")
-2. Open this URL in your browser (replace `<TOKEN>` with your bot token):
+### Method 1: Using @userinfobot (Easiest)
+1. In Telegram, search for `@userinfobot`
+2. Start a chat and send any message
+3. The bot instantly replies with your ID:
    ```
-   https://api.telegram.org/bot<TOKEN>/getUpdates
+   Id: 123456789
+   First: Your Name
+   ```
+4. **Copy that ID number**
+
+### Method 2: Using Telegram API
+1. Open your new bot in Telegram and send it any message (e.g., "hello")
+2. Open this URL in your browser (replace `<FULL_TOKEN>` with your complete bot token):
+   ```
+   https://api.telegram.org/bot<FULL_TOKEN>/getUpdates
+   ```
+   Example:
+   ```
+   https://api.telegram.org/bot1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789/getUpdates
    ```
 3. Find `"chat":{"id":123456789}` in the response
 4. **Copy the chat ID number**
@@ -64,14 +81,16 @@ cp .env.example .env
 
 Edit `.env`:
 ```env
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789
 TELEGRAM_CHAT_ID=123456789
 TELEGRAM_ENABLED=true
 ```
 
+**IMPORTANT:** The bot token must include the colon (`:`) and everything after it!
+
 ### Option C: CLI
 ```bash
-python -m src.cli config set bot-token 123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+python -m src.cli config set bot-token 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789
 python -m src.cli config set chat-id 123456789
 ```
 
@@ -100,10 +119,16 @@ OK Test message sent
 
 | Problem | Solution |
 |---------|----------|
-| "Bot auth failed" | Double-check your bot token |
+| "Bot auth failed" | Make sure you copied the FULL token including the colon (`:`) and everything after it |
 | "Send failed" | Make sure you messaged the bot first |
 | No chat ID in getUpdates | Send a message to the bot, then refresh |
 | Empty getUpdates response | Wait a moment and try again |
+| 404 error on getUpdates | Check you're using the full token in the URL |
+
+### Common Token Mistakes
+
+❌ **Wrong:** `1234567890` (only the first part)  
+✅ **Correct:** `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789` (full token with colon)
 
 ---
 

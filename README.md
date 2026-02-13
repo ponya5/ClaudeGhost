@@ -16,6 +16,9 @@ ClaudeGhost wraps the `claude` CLI in a supervised shell, automatically approvin
 - **Telegram Bot API**: Approve/block commands from your phone - free, unlimited, instant
 - **Risk Classification**: Commands categorized as Read-Only, Write, Execute, or Critical
 - **Budget Control**: Set spending limits with automatic pause on exceed
+- **Session Loop**: Run multiple tasks back-to-back without restarting
+- **Changelog Tracking**: Automatic session logs with files modified and commands executed
+- **Auto-Update Checker**: Get notified when a new version is available
 - **Live Dashboard**: Rich terminal UI showing real-time status and logs
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 - **Stall Detection**: Alerts you when the CLI hangs
@@ -54,13 +57,13 @@ python setup_interactive.py
 
 Or manually:
 1. Message **@BotFather** on Telegram -> `/newbot`
-2. Copy the bot token
-3. Message your bot, get your chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates`
+2. Copy the FULL bot token (including colon, e.g., `1234567890:ABCdef...`)
+3. Message your bot, get your chat ID from **@userinfobot**
 4. Configure:
 
 ```bash
 cp .env.example .env
-# Edit .env with your token and chat_id
+# Edit .env with your FULL token and chat_id
 ```
 
 Full guide: [`docs/TELEGRAM_SETUP.md`](docs/TELEGRAM_SETUP.md)
@@ -75,6 +78,12 @@ python -m src.cli config test
 
 ```bash
 python -m src.launcher "Create a hello world app" --level 3
+```
+
+Or use the main entry point:
+
+```bash
+python claudeghost.py "Create a hello world app" --level 3
 ```
 
 You'll receive Telegram notifications when approval is needed.
@@ -109,20 +118,61 @@ When approval is needed, reply with:
 ## CLI Reference
 
 ```bash
-# Interactive mode
-python -m src.launcher
+# Interactive mode (recommended)
+python claudeghost.py
 
 # Quick mode
-python -m src.launcher "task" --level 3 --budget 10.00
+python claudeghost.py "task" --level 3 --budget 10.00
 
 # Screen-only (no Telegram)
-python -m src.launcher "task" --no-telegram
+python claudeghost.py "task" --no-telegram
 
 # Config management
 python -m src.cli config show
 python -m src.cli config set bot-token YOUR_TOKEN
 python -m src.cli config set chat-id YOUR_CHAT_ID
 python -m src.cli config test
+
+# Check for updates
+python -m src.updater
+```
+
+---
+
+## Session Loop
+
+After each task completes, ClaudeGhost asks if you want to start another session. No need to restart the tool between tasks.
+
+```
+Session Complete
+  Duration: 5m 12s
+  Cost: $0.42 / $10.00
+
+📄 Changelog saved: session_logs/session_20260213_143015_a1b2c3d4.txt
+
+Start another session? [y/N]: y
+```
+
+---
+
+## Changelog Tracking
+
+Every session automatically saves a detailed log to `session_logs/`:
+
+- Files modified
+- Commands executed
+- Duration, cost, and task summary
+
+A short summary is sent via Telegram with a link to the full log file. No long messages cluttering your chat.
+
+---
+
+## Auto-Update
+
+ClaudeGhost checks for updates on startup. If a new version is available, you'll see a notification. Update with:
+
+```bash
+python -m src.updater
 ```
 
 ---
@@ -131,19 +181,23 @@ python -m src.cli config test
 
 ```
 ClaudeGhost/
+├── claudeghost.py         # Main entry point
 ├── src/
-│   ├── main.py           # Orchestrator
-│   ├── bridge.py          # Claude CLI wrapper (PTY/subprocess)
-│   ├── guardian.py         # Risk classification engine
-│   ├── telegram_bot.py     # Telegram Bot API client
-│   ├── screen_notifier.py  # Terminal-only fallback
-│   ├── config.py           # Settings (pydantic)
-│   ├── launcher.py         # Interactive launcher
-│   ├── cli.py              # CLI utilities
-│   └── utils.py            # Logging, stats, TUI dashboard
-├── tests/                  # Test suite
-├── docs/                   # Documentation
-├── .env.example            # Config template
+│   ├── main.py            # Orchestrator + session loop
+│   ├── bridge.py           # Claude CLI wrapper (PTY/subprocess)
+│   ├── guardian.py          # Risk classification engine
+│   ├── telegram_bot.py      # Telegram Bot API client
+│   ├── screen_notifier.py   # Terminal-only fallback
+│   ├── config.py            # Settings (pydantic)
+│   ├── launcher.py          # Interactive launcher
+│   ├── changelog.py         # Session changelog tracker
+│   ├── updater.py           # Auto-update checker
+│   ├── cli.py               # CLI utilities
+│   └── utils.py             # Logging, stats, TUI dashboard
+├── tests/                   # Test suite
+├── docs/                    # Documentation
+├── session_logs/            # Session changelogs (gitignored)
+├── .env.example             # Config template
 ├── requirements.txt
 └── setup.py
 ```

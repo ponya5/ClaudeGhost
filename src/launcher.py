@@ -56,7 +56,7 @@ def print_banner() -> None:
 
 def select_afk_level() -> int:
     """Interactive AFK level selection."""
-    console.print("[bold]Step 1: Select AFK Autonomy Level[/bold]\n")
+    console.print("[bold]Step 2: Select AFK Autonomy Level[/bold]\n")
     table = Table(show_header=True, header_style="bold magenta", box=None)
     table.add_column("Level", style="bold", width=8)
     table.add_column("Name", width=12)
@@ -88,7 +88,7 @@ def select_afk_level() -> int:
 
 def select_budget() -> float:
     """Interactive budget selection."""
-    console.print("[bold]Step 2: Set Usage Budget Limit[/bold]\n")
+    console.print("[bold]Step 4: Set Budget Limit (Quota)[/bold]\n")
     table = Table(show_header=True, header_style="bold magenta", box=None)
     table.add_column("Preset", width=12)
     table.add_column("Amount", width=10)
@@ -131,7 +131,7 @@ def select_budget() -> float:
 
 def select_notification_mode() -> bool:
     """Select Telegram or screen-only notification."""
-    console.print("[bold]Step 3: Notification Mode[/bold]\n")
+    console.print("[bold]Step 3: Communication Method[/bold]\n")
     console.print("  [1] [green]Telegram[/green] - Get approval requests on your phone")
     console.print("  [2] [cyan]Screen Only[/cyan] - Show prompts in terminal\n")
 
@@ -151,7 +151,7 @@ def select_notification_mode() -> bool:
 
 def enter_task() -> str:
     """Get the task description from user."""
-    console.print("[bold]Step 4: Enter Your Task[/bold]\n")
+    console.print("[bold]Step 1: Enter Your Task[/bold]\n")
     console.print("[dim]Examples:[/dim]")
     console.print("[dim]  - Refactor auth_service.py to use JWT[/dim]")
     console.print("[dim]  - Add unit tests for UserController[/dim]")
@@ -193,10 +193,17 @@ def run_interactive_launcher() -> Optional[SessionConfig]:
     """Run the full interactive launcher flow."""
     print_banner()
     try:
-        afk_level = select_afk_level()
-        budget = select_budget()
-        telegram_enabled = select_notification_mode()
+        # Step 1: Task
         task = enter_task()
+        
+        # Step 2: AFK Level
+        afk_level = select_afk_level()
+        
+        # Step 3: Communication Method
+        telegram_enabled = select_notification_mode()
+        
+        # Step 4: Budget/Quota
+        budget = select_budget()
 
         config = SessionConfig(
             task=task,
