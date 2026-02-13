@@ -149,6 +149,7 @@ def main():
         "test_bridge",
         "test_utils",
         "test_integration",
+        # "test_waha_integration",  # Uncomment to test live WAHA (requires running server)
     ]
     
     results = []
