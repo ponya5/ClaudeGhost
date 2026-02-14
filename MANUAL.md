@@ -127,12 +127,13 @@ The interactive launcher walks you through 4 steps:
 4. Set budget limit
 
 What happens during a session:
-1. ClaudeGhost spawns Claude CLI with your task
-2. Read-only commands auto-approve (level 3)
-3. Write commands auto-approve (level 3)
-4. Execute commands -> Telegram notification
-5. You reply A/B/C/D on Telegram
-6. Session ends -> changelog saved -> ask for another session
+1. ClaudeGhost launches Claude Code with your task (no separate terminal needed)
+2. You see real-time progress in the ClaudeGhost dashboard (files read, edited, commands run)
+3. Read-only commands auto-approve (level 3)
+4. Write commands auto-approve (level 3)
+5. Execute commands -> Telegram notification
+6. You reply A/B/C/D on Telegram
+7. Session ends -> changelog saved -> ask for another session
 
 ---
 

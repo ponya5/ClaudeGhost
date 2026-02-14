@@ -208,8 +208,11 @@ class ClaudeGhostSetup:
                     "text": (
                         "✅ ClaudeGhost setup complete!\n\n"
                         "To start using ClaudeGhost:\n"
-                        "1. Open a terminal → run: claude\n"
-                        "2. Open a second terminal → run the launch script\n\n"
+                        "Open a terminal and run the launch script:\n"
+                        "  Windows: launch_claudeghost.bat\n"
+                        "  macOS/Linux: ./launch_claudeghost.sh\n\n"
+                        "ClaudeGhost will launch Claude Code automatically "
+                        "and supervise the session.\n"
                         "You'll receive task updates and approval requests here."
                     ),
                 },
@@ -233,10 +236,10 @@ class ClaudeGhostSetup:
             console.print(Panel.fit(
                 "[bold green]ClaudeGhost Setup Complete![/bold green]\n\n"
                 "[bold]How to use:[/bold]\n"
-                "  1. Open a terminal and start [cyan]Claude Code[/cyan]:\n"
-                "       claude\n\n"
-                "  2. Open a [bold]second terminal[/bold] and launch ClaudeGhost:\n"
+                "  Open a terminal and launch ClaudeGhost:\n"
                 f"       {launch_cmd}\n\n"
+                "  ClaudeGhost will launch Claude Code automatically\n"
+                "  and supervise the session for you.\n\n"
                 "[bold]Or run directly:[/bold]\n"
                 '  python claudeghost.py "your task" --level 3\n\n'
                 "[bold]Test connection:[/bold]\n"
@@ -251,10 +254,10 @@ class ClaudeGhostSetup:
             print("  ClaudeGhost Setup Complete!")
             print("=" * 50)
             print("\n  How to use:")
-            print("    1. Open a terminal and start Claude Code:")
-            print("         claude")
-            print(f"\n    2. Open a second terminal and run:")
+            print(f"    Open a terminal and run:")
             print(f"         {launch_cmd}")
+            print("\n  ClaudeGhost will launch Claude Code automatically")
+            print("  and supervise the session for you.")
             print('\n  Or run directly:')
             print('    python claudeghost.py "your task" --level 3')
             print("\n  Test: python -m src.cli config test")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import json
 import re
 import sys
 import time
@@ -13,27 +13,17 @@ from src.config import settings
 from src.utils import logger, ghost_status
 
 # ---------------------------------------------------------------------------
-# Try pexpect (Unix / WSL / Docker), fall back to subprocess (Windows native)
-# ---------------------------------------------------------------------------
-_USE_PEXPECT = True
-try:
-    import pexpect
-except ImportError:
-    _USE_PEXPECT = False
-
-# On Windows, always use subprocess for better compatibility with .cmd files
-if sys.platform == "win32":
-    _USE_PEXPECT = False
-
-# ---------------------------------------------------------------------------
-# AFK level -> --allowedTools mapping for headless (-p) mode on Windows
+# AFK level -> --allowedTools mapping for headless (-p) mode
 # ---------------------------------------------------------------------------
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
-    1: [],                                          # Paranoid: nothing auto-approved
-    2: ["Read"],                                    # Auditor: read only
-    3: ["Read", "Write", "Edit"],                   # Manager: read + write
-    4: ["Read", "Write", "Edit", "Bash"],           # Director: read + write + execute
-    5: ["Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch"],  # God Mode: everything
+    1: [],
+    2: ["Read"],
+    3: ["Read", "Write", "Edit"],
+    4: ["Read", "Write", "Edit", "Bash"],
+    5: [
+        "Read", "Write", "Edit",
+        "Bash", "WebFetch", "WebSearch",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -53,31 +43,37 @@ def strip_ansi(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# State detection patterns
+# Cost-parsing patterns
+# ---------------------------------------------------------------------------
+_COST_RE = re.compile(
+    r"(?i)(?:cost|total|spent)[:\s]*\$?([\d]+\.[\d]{2})"
+)
+_JSON_COST_RE = re.compile(
+    r'"costUSD"\s*:\s*([\d]+\.[\d]+)'
+)
+_JSON_COST_TOTAL_RE = re.compile(
+    r'"cost"\s*:\s*\{[^}]*"total"\s*:\s*([\d]+\.[\d]+)'
+)
+_TOTAL_COST_RE = re.compile(
+    r"Total cost:\s*\$?([\d]+\.[\d]{2})"
+)
+
+# ---------------------------------------------------------------------------
+# State detection patterns (used for pexpect / TUI mode)
 # ---------------------------------------------------------------------------
 _QUERY_RE = re.compile(
     r"(?i)"
-    r"(do you want to (run|create|edit|delete|execute|overwrite|write|allow|remove))"
+    r"(do you want to "
+    r"(run|create|edit|delete|execute|overwrite|write|allow|remove))"
     r"|(\(y\/n\))"
     r"|(\(Y\)es|\(N\)o)"
     r"|(approve this|allow this|proceed\s*\?)"
     r"|(yes.*?/.*?no)"
     r"|(Allow|Deny|Skip)\s",
 )
-_PROMPT_RE = re.compile(r"(?:^|\n)\s*>\s*$", re.MULTILINE)
-_COST_RE = re.compile(r"(?i)(?:cost|total|spent)[:\s]*\$?([\d]+\.[\d]{2})")
-
-# JSON cost patterns from stream-json output
-_JSON_COST_RE = re.compile(r'"costUSD"\s*:\s*([\d]+\.[\d]+)')
-_JSON_COST_TOTAL_RE = re.compile(
-    r'"cost"\s*:\s*\{[^}]*"total"\s*:\s*([\d]+\.[\d]+)'
+_PROMPT_RE = re.compile(
+    r"(?:^|\n)\s*>\s*$", re.MULTILINE
 )
-# Also match "Total cost: $X.XX" from /cost command output
-_TOTAL_COST_RE = re.compile(
-    r"Total cost:\s*\$?([\d]+\.[\d]{2})"
-)
-
-# Claude Code's actual tool-use permission patterns
 _TOOL_QUERY_RE = re.compile(
     r"(?i)"
     r"(claude wants to (run|execute|use|call))"
@@ -95,11 +91,162 @@ class CliState(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Stream-JSON event parser
+# ---------------------------------------------------------------------------
+def _parse_stream_event(line: str) -> Optional[str]:
+    """Parse a stream-json line into a human-readable summary.
+
+    Returns None if the line is not interesting.
+    """
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        evt = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    etype = evt.get("type", "")
+
+    # --- Assistant messages ---
+    if etype == "assistant":
+        msg = evt.get("message", {})
+        content = msg.get("content", [])
+        parts: list[str] = []
+        for block in (
+            content if isinstance(content, list) else []
+        ):
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    for ln in text.strip().splitlines():
+                        ln = ln.strip()
+                        if ln:
+                            parts.append(ln[:120])
+                            break
+            elif btype == "tool_use":
+                name = block.get("name", "tool")
+                inp = block.get("input", {})
+                if name.lower() in ("bash", "execute"):
+                    cmd = inp.get("command", "")
+                    parts.append(
+                        f"[cyan]⚡ {name}:[/cyan] "
+                        f"{cmd[:100]}"
+                    )
+                elif name.lower() in (
+                    "read", "readfile",
+                ):
+                    path = inp.get(
+                        "file_path",
+                        inp.get("path", ""),
+                    )
+                    parts.append(
+                        f"[dim]📖 Read:[/dim] {path}"
+                    )
+                elif name.lower() in (
+                    "write", "edit", "editfile",
+                    "writefile", "create",
+                ):
+                    path = inp.get(
+                        "file_path",
+                        inp.get("path", ""),
+                    )
+                    parts.append(
+                        f"[yellow]✏️  Edit:[/yellow]"
+                        f" {path}"
+                    )
+                else:
+                    parts.append(
+                        f"[magenta]🔧 {name}[/magenta]"
+                    )
+        if parts:
+            return " | ".join(parts)
+
+    # --- Streaming text delta ---
+    if etype == "content_block_delta":
+        delta = evt.get("delta", {})
+        if delta.get("type") == "text_delta":
+            text = delta.get("text", "").strip()
+            if text and len(text) > 5:
+                return text[:120]
+
+    # --- Result / completion ---
+    if etype == "result":
+        cost = (
+            evt.get("total_cost_usd")
+            or evt.get("cost_usd")
+            or evt.get("costUSD")
+        )
+        # Also check modelUsage for cost
+        if not cost:
+            mu = evt.get("modelUsage", {})
+            for v in mu.values():
+                if isinstance(v, dict):
+                    c = v.get("costUSD")
+                    if c:
+                        cost = c
+                        break
+        num_turns = evt.get("num_turns", "")
+        duration = evt.get("duration_ms", 0)
+        dur_s = f"{duration / 1000:.1f}s" if duration else ""
+        if cost:
+            return (
+                f"[green]✓ Done[/green] — "
+                f"cost: ${float(cost):.4f}"
+                f" turns: {num_turns}"
+                f" {dur_s}"
+            )
+        result_text = evt.get("result", "")
+        if (
+            isinstance(result_text, str)
+            and result_text.strip()
+        ):
+            return (
+                f"[green]✓[/green] "
+                f"{result_text[:100]}"
+            )
+
+    # --- System messages ---
+    if etype == "system":
+        sub = evt.get("subtype", "")
+        if sub == "init":
+            model = evt.get("model", "")
+            cwd = evt.get("cwd", "")
+            return (
+                f"[green]⚙ Initialized[/green]"
+                f" model={model}"
+                f" cwd={cwd[-40:]}"
+            )
+        if sub == "hook_started":
+            name = evt.get("hook_name", "")
+            return f"[dim]🔗 Hook: {name}[/dim]"
+        if sub == "hook_response":
+            name = evt.get("hook_name", "")
+            outcome = evt.get("outcome", "")
+            return (
+                f"[dim]🔗 Hook done: {name}"
+                f" ({outcome})[/dim]"
+            )
+        msg = evt.get("message", "")
+        if isinstance(msg, str) and msg.strip():
+            return f"[dim]{msg[:120]}[/dim]"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Bridge
 # ---------------------------------------------------------------------------
 class GhostBridge:
-    """Wraps the claude CLI in a PTY (or subprocess on Windows) and provides
-    programmatic I/O with state detection."""
+    """Wraps the claude CLI in a subprocess and provides
+    programmatic I/O with state detection.
+
+    Both Windows and macOS/Linux use headless mode
+    (``claude -p`` with ``--output-format stream-json``)
+    so that ClaudeGhost can reliably parse events and
+    display them in the dashboard.
+    """
 
     def __init__(
         self,
@@ -115,14 +262,14 @@ class GhostBridge:
         self._on_stall = on_stall
         self._afk_level = max(1, min(5, afk_level))
 
-        self._child: Optional[object] = None  # pexpect.spawn or subprocess.Popen
+        self._child: Optional[subprocess.Popen] = None
         self._buffer: str = ""
         self._state = CliState.THINKING
         self._running = False
         self._last_output_time = time.time()
         self._total_cost: float = 0.0
         self._lock = threading.Lock()
-        self._query_fired_for: Optional[str] = None  # dedup key
+        self._query_fired_for: Optional[str] = None
 
     @property
     def state(self) -> CliState:
@@ -138,40 +285,39 @@ class GhostBridge:
     def start(self) -> None:
         binary = settings.claude_binary
         cwd = settings.working_directory
-        logger.info("Spawning: %s %r  (cwd=%s, backend=%s)",
-                     binary, self.task, cwd,
-                     "pexpect" if _USE_PEXPECT else "subprocess")
-        ghost_status.add_log(f"[bold]Spawning:[/bold] {binary} \"{self.task[:50]}\"")
-
-        if _USE_PEXPECT:
-            self._start_pexpect(binary, cwd)
-        else:
-            self._start_subprocess(binary, cwd)
-
+        logger.info(
+            "Spawning: %s %r  (cwd=%s)",
+            binary, self.task, cwd,
+        )
+        ghost_status.add_log(
+            f'[bold]Spawning:[/bold] {binary} '
+            f'"{self.task[:50]}"'
+        )
+        self._start_headless(binary, cwd)
         self._running = True
-
-        threading.Thread(target=self._read_loop, daemon=True).start()
-        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        threading.Thread(
+            target=self._read_loop, daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._heartbeat_loop, daemon=True,
+        ).start()
 
     def send(self, text: str) -> None:
-        """Inject text + newline into the running process."""
+        """Inject text into the running process stdin."""
         logger.info("Injecting: %r", text)
         ghost_status.add_log(f"[yellow]>>> {text}[/yellow]")
-        if _USE_PEXPECT and self._child is not None:
-            child = self._child  # type: ignore[assignment]
-            if child.isalive():
-                child.sendline(text)
-        elif isinstance(self._child, subprocess.Popen):
-            if self._child.stdin and self._child.poll() is None:
-                self._child.stdin.write(text + "\n")
-                self._child.stdin.flush()
+        if (
+            self._child
+            and self._child.stdin
+            and self._child.poll() is None
+        ):
+            self._child.stdin.write(text + "\n")
+            self._child.stdin.flush()
 
     def kill(self) -> None:
         self._running = False
         try:
-            if _USE_PEXPECT and self._child is not None:
-                self._child.terminate(force=True)  # type: ignore[union-attr]
-            elif isinstance(self._child, subprocess.Popen):
+            if self._child:
                 self._child.terminate()
                 try:
                     self._child.wait(timeout=5)
@@ -181,59 +327,46 @@ class GhostBridge:
             logger.error("Kill error: %s", exc)
         self._state = CliState.EXITED
         ghost_status.state = "EXITED"
-        ghost_status.add_log("[red]Process terminated.[/red]")
+        ghost_status.add_log(
+            "[red]Process terminated.[/red]"
+        )
 
     # ------------------------------------------------------------------
-    # Spawn backends
+    # Spawn (headless on all platforms)
     # ------------------------------------------------------------------
-    def _start_pexpect(self, binary: str, cwd: str) -> None:
-        import pexpect as _pexpect
-
-        if sys.platform == "win32":
-            self._child = _pexpect.popen_spawn.PopenSpawn(
-                f'{binary} "{self.task}"',
-                encoding="utf-8",
-                timeout=None,
-                maxread=4096,
-                cwd=cwd if cwd != "." else None,
-            )
-        else:
-            self._child = _pexpect.spawn(
-                binary,
-                args=[self.task],
-                encoding="utf-8",
-                timeout=None,
-                maxread=4096,
-                cwd=cwd if cwd != "." else None,
-            )
-
-    def _start_subprocess(self, binary: str, cwd: str) -> None:
-        # On Windows, Claude Code's interactive TUI doesn't work with piped
-        # stdin/stdout.  Use headless mode (-p) with --allowedTools mapped
-        # from the AFK level so that permission handling still works.
-        # Use stream-json output so we can parse cost from structured data.
+    def _start_headless(
+        self, binary: str, cwd: str,
+    ) -> None:
         args = [
             binary, "-p", self.task,
             "--output-format", "stream-json",
             "--verbose",
         ]
 
-        allowed = _LEVEL_ALLOWED_TOOLS.get(self._afk_level, [])
+        allowed = _LEVEL_ALLOWED_TOOLS.get(
+            self._afk_level, []
+        )
         for tool in allowed:
             args.extend(["--allowedTools", tool])
 
-        # Enforce budget at the Claude Code level — this is the hard limit.
-        # Claude Code will stop itself when this budget is reached.
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
-            args.extend(["--max-budget-usd", str(budget)])
+            args.extend([
+                "--max-budget-usd", str(budget),
+            ])
 
         use_shell = sys.platform == "win32"
         logger.info("Subprocess args: %s", args)
         ghost_status.add_log(
-            f"[bold]Headless mode:[/bold] level {self._afk_level}, "
-            f"allowed tools: {', '.join(allowed) or 'none'}, "
+            f"[bold]Headless mode:[/bold] "
+            f"level {self._afk_level}, "
+            f"tools: "
+            f"{', '.join(allowed) or 'none'}, "
             f"budget: ${budget:.2f}"
+        )
+        ghost_status.add_event(
+            "[bold green]Claude Code launched — "
+            "events will appear here ↓[/bold green]"
         )
 
         self._child = subprocess.Popen(
@@ -257,7 +390,14 @@ class GhostBridge:
                 self._state = CliState.EXITED
                 self._running = False
                 ghost_status.state = "EXITED"
-                ghost_status.add_log("[bold red]CLI process exited.[/bold red]")
+                ghost_status.add_log(
+                    "[bold red]CLI process exited."
+                    "[/bold red]"
+                )
+                ghost_status.add_event(
+                    "[bold red]Claude Code exited."
+                    "[/bold red]"
+                )
                 if self._on_idle:
                     self._on_idle()
                 break
@@ -270,10 +410,21 @@ class GhostBridge:
             clean = strip_ansi(chunk)
             self._buffer += clean
 
+            # Parse each line of output
             for line in clean.splitlines():
                 stripped = line.strip()
-                if stripped:
-                    ghost_status.add_log(stripped[:120])
+                if not stripped:
+                    continue
+
+                # Try stream-json parsing first
+                readable = _parse_stream_event(stripped)
+                if readable:
+                    ghost_status.add_event(readable)
+                elif not stripped.startswith("{"):
+                    # Non-JSON (stderr, plain text)
+                    ghost_status.add_log(
+                        stripped[:120]
+                    )
 
             self._parse_cost(clean)
             self._detect_state()
@@ -282,27 +433,16 @@ class GhostBridge:
                 self._buffer = self._buffer[-10_000:]
 
     def _read_chunk(self) -> Optional[str]:
-        """Return a chunk of text, empty string on timeout, None on EOF."""
-        if _USE_PEXPECT and self._child is not None:
-            import pexpect as _pexpect
-            try:
-                data = self._child.read_nonblocking(size=4096, timeout=1)  # type: ignore[union-attr]
-                return data
-            except _pexpect.TIMEOUT:
-                return ""
-            except (_pexpect.EOF, OSError):
+        """Read a line from stdout. None on EOF."""
+        if self._child is None or self._child.stdout is None:
+            return None
+        try:
+            line = self._child.stdout.readline()
+            if not line and self._child.poll() is not None:
                 return None
-        elif isinstance(self._child, subprocess.Popen):
-            if self._child.stdout is None:
-                return None
-            try:
-                line = self._child.stdout.readline()
-                if not line and self._child.poll() is not None:
-                    return None
-                return line
-            except (OSError, ValueError):
-                return None
-        return None
+            return line
+        except (OSError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # State detection
@@ -310,9 +450,15 @@ class GhostBridge:
     def _detect_state(self) -> None:
         tail = self._buffer[-3000:]
 
-        if _QUERY_RE.search(tail) or _TOOL_QUERY_RE.search(tail):
+        if (
+            _QUERY_RE.search(tail)
+            or _TOOL_QUERY_RE.search(tail)
+        ):
             dedup_key = tail[-500:]
-            if self._state != CliState.QUERY or self._query_fired_for != dedup_key:
+            if (
+                self._state != CliState.QUERY
+                or self._query_fired_for != dedup_key
+            ):
                 self._state = CliState.QUERY
                 self._query_fired_for = dedup_key
                 ghost_status.state = "QUERY"
@@ -334,7 +480,6 @@ class GhostBridge:
     def _parse_cost(self, text: str) -> None:
         best = self._total_cost
 
-        # Pattern 1: stream-json "costUSD": 0.37
         for m in _JSON_COST_RE.finditer(text):
             try:
                 val = float(m.group(1))
@@ -343,7 +488,6 @@ class GhostBridge:
             except ValueError:
                 pass
 
-        # Pattern 2: JSON "cost": {"total": 0.55}
         for m in _JSON_COST_TOTAL_RE.finditer(text):
             try:
                 val = float(m.group(1))
@@ -352,7 +496,6 @@ class GhostBridge:
             except ValueError:
                 pass
 
-        # Pattern 3: "Total cost: $0.55" from /cost output
         for m in _TOTAL_COST_RE.finditer(text):
             try:
                 val = float(m.group(1))
@@ -361,7 +504,6 @@ class GhostBridge:
             except ValueError:
                 pass
 
-        # Pattern 4: generic "cost/total/spent: $X.XX"
         for m in _COST_RE.finditer(text):
             try:
                 val = float(m.group(1))
@@ -382,14 +524,20 @@ class GhostBridge:
         while self._running:
             time.sleep(5)
             with self._lock:
-                elapsed = time.time() - self._last_output_time
+                elapsed = (
+                    time.time() - self._last_output_time
+                )
+            timeout = settings.heartbeat_timeout_seconds
             if (
-                elapsed > settings.heartbeat_timeout_seconds
+                elapsed > timeout
                 and self._state == CliState.THINKING
             ):
-                logger.warning("Heartbeat: stall detected (%0.fs)", elapsed)
+                logger.warning(
+                    "Heartbeat: stall (%0.fs)", elapsed,
+                )
                 ghost_status.add_log(
-                    f"[bold yellow]Stall detected ({elapsed:.0f}s)[/bold yellow]"
+                    f"[bold yellow]Stall detected "
+                    f"({elapsed:.0f}s)[/bold yellow]"
                 )
                 if self._on_stall:
                     self._on_stall()
