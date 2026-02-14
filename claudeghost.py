@@ -23,11 +23,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.launcher import run_interactive_launcher, run_quick_launcher
 from src.main import ClaudeGhost
+from src.updater import auto_update
 from src.utils import logger
 
 
 def main():
     """Main entry point for ClaudeGhost."""
+    # Auto-update before anything else
+    auto_update()
+
     parser = argparse.ArgumentParser(
         description="ClaudeGhost - Headless Supervisor for Claude Code CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,

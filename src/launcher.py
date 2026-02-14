@@ -50,6 +50,10 @@ def print_banner() -> None:
     banner.append(" Headless Supervisor for Claude Code", style="dim")
     banner.append("\n")
     banner.append(" v2.0 - Telegram Edition", style="dim")
+    banner.append("\n\n")
+    banner.append(" Created by Daniel Shalom", style="bold white")
+    banner.append("\n")
+    banner.append(" github.com/ponya5", style="dim cyan")
     console.print(Panel(banner, border_style="blue", padding=(0, 2)))
     console.print()
 

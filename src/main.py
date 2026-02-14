@@ -25,7 +25,7 @@ from src.screen_notifier import ScreenNotifier
 from src.utils import logger, ghost_status, console
 from src.launcher import run_interactive_launcher, run_quick_launcher
 from src.changelog import ChangeLog
-from src.updater import check_for_updates, print_update_notification
+from src.updater import auto_update
 
 
 class ClaudeGhost:
@@ -385,11 +385,11 @@ class ClaudeGhost:
     def _send_summary(self) -> None:
         assert self._bridge is not None
         s = ghost_status.stats
-        
+
         # Finalize and save changelog
         self._changelog.finalize()
         changelog_path = self._changelog.save()
-        
+
         summary = (
             f"ClaudeGhost session ended\n"
             f"Task: {self.task}\n"
@@ -402,12 +402,20 @@ class ClaudeGhost:
             f"Commands: {s.commands_executed}\n"
             f"\n{self._changelog.get_summary()}"
         )
-        
-        if changelog_path:
-            summary += f"\n\n📄 Full changelog: {changelog_path}"
-        
+
         self._notify(summary)
-        ghost_status.add_log("[bold green]Session complete.[/bold green]")
+
+        # Send the session log file as a Telegram document
+        # so the user can tap to open it directly
+        if changelog_path and self._telegram:
+            self._telegram.send_file(
+                str(changelog_path),
+                caption="📄 Session changelog",
+            )
+
+        ghost_status.add_log(
+            "[bold green]Session complete.[/bold green]"
+        )
         console.print()
         console.print("[bold green]Session Complete[/bold green]")
         console.print(f"  Duration: {s.elapsed_formatted}")
@@ -416,10 +424,11 @@ class ClaudeGhost:
             f" / ${self.config.budget_usd:.2f}"
         )
         console.print(f"  Queries: {s.queries_total} total")
-        
+
         if changelog_path:
             console.print(
-                f"\n[cyan]📄 Changelog saved:[/cyan] {changelog_path}"
+                f"\n[cyan]📄 Changelog saved:[/cyan]"
+                f" {changelog_path}"
             )
 
     @staticmethod
@@ -461,11 +470,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Check for updates
-    update_available, latest_version = check_for_updates()
-    if update_available and latest_version:
-        print_update_notification(latest_version)
-        console.print()
+    # Auto-update before anything else
+    auto_update()
+    console.print()
 
     # Session loop
     while True:

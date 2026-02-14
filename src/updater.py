@@ -133,6 +133,129 @@ def print_update_notification(message: str) -> None:
     console.print(Panel(text, border_style="yellow", padding=(1, 2)))
 
 
+def auto_update() -> None:
+    """Check for updates and apply them automatically with a spinner.
+
+    Called at launch — if an update is found the repo is pulled,
+    dependencies are installed, and the user sees a progress message
+    the whole time.  If anything fails it is silently skipped so the
+    normal launch flow is never blocked.
+    """
+    from rich.console import Console
+    from rich.status import Status
+
+    console = Console()
+
+    try:
+        cg_dir = Path(__file__).parent.parent
+        git_dir = cg_dir / ".git"
+        if not git_dir.exists():
+            return
+
+        # --- Phase 1: fetch + compare (quick) ---
+        with Status(
+            "[cyan]Checking for updates...[/cyan]",
+            console=console,
+            spinner="dots",
+        ):
+            subprocess.run(
+                ["git", "fetch", "origin", "--quiet"],
+                cwd=cg_dir,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+
+            local = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=cg_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            remote = subprocess.run(
+                ["git", "rev-parse", "origin/main"],
+                cwd=cg_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            if (
+                local.returncode != 0
+                or remote.returncode != 0
+            ):
+                return
+
+            if local.stdout.strip() == remote.stdout.strip():
+                console.print(
+                    f"[green]✓[/green] ClaudeGhost is up to date "
+                    f"(v{CURRENT_VERSION})"
+                )
+                return
+
+            # How far behind?
+            behind = subprocess.run(
+                [
+                    "git", "rev-list", "--count",
+                    "HEAD..origin/main",
+                ],
+                cwd=cg_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            count = (
+                behind.stdout.strip()
+                if behind.returncode == 0
+                else "new"
+            )
+
+        # --- Phase 2: pull + install (may take a moment) ---
+        with Status(
+            f"[yellow]Updating ClaudeGhost "
+            f"({count} update(s))...[/yellow]",
+            console=console,
+            spinner="dots",
+        ):
+            pull = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=cg_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            if pull.returncode != 0:
+                console.print(
+                    "[red]✗ Update failed "
+                    "(git pull error)[/red]"
+                )
+                logger.debug(
+                    "git pull stderr: %s", pull.stderr
+                )
+                return
+
+            subprocess.run(
+                [
+                    sys.executable, "-m", "pip", "install",
+                    "-r", "requirements.txt", "--quiet",
+                ],
+                cwd=cg_dir,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+
+        console.print(
+            f"[green]✓ Updated to latest "
+            f"({count} update(s) applied)[/green]"
+        )
+
+    except Exception as exc:
+        logger.debug("Auto-update failed: %s", exc)
+
+
 def main() -> None:
     """CLI entry point for updating ClaudeGhost."""
     from rich.console import Console

@@ -97,6 +97,49 @@ class TelegramBot:
             ghost_status.add_log("[red]Telegram send error[/red]")
             return False
 
+    def send_file(self, file_path: str, caption: str = "") -> bool:
+        """Send a file as a Telegram document attachment."""
+        from pathlib import Path
+
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(
+                "File not found for upload: %s", file_path
+            )
+            return False
+
+        try:
+            with open(path, "rb") as f:
+                r = requests.post(
+                    f"{self._api}/sendDocument",
+                    data={
+                        "chat_id": self._chat_id,
+                        "caption": caption[:1024],
+                        "parse_mode": "HTML",
+                    },
+                    files={"document": (path.name, f)},
+                    timeout=30,
+                )
+            data = r.json()
+            if data.get("ok"):
+                logger.info(
+                    "Telegram file >>> %s", path.name
+                )
+                ghost_status.add_log(
+                    f"[green]Telegram file >>>[/green] "
+                    f"{path.name}"
+                )
+                return True
+            logger.error(
+                "Telegram file send failed: %s", data
+            )
+            return False
+        except requests.RequestException as exc:
+            logger.error(
+                "Telegram file send failed: %s", exc
+            )
+            return False
+
     def start_polling(self, callback: Callable[[str], None]) -> None:
         """Start long-polling for incoming messages."""
         self._reply_callback = callback
