@@ -94,8 +94,8 @@ AFK Levels:
         
         # Run ClaudeGhost
         ghost = ClaudeGhost(config)
-        exit_code = ghost.run()
-        return exit_code
+        ghost.run()
+        return 0
         
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

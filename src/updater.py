@@ -32,6 +32,8 @@ def check_for_updates() -> Tuple[bool, str]:
             timeout=10,
         )
 
+        branch = _get_default_branch(cg_dir)
+
         # Compare local HEAD vs remote HEAD
         local = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -41,7 +43,7 @@ def check_for_updates() -> Tuple[bool, str]:
             check=False,
         )
         remote = subprocess.run(
-            ["git", "rev-parse", "origin/main"],
+            ["git", "rev-parse", f"origin/{branch}"],
             cwd=cg_dir,
             capture_output=True,
             text=True,
@@ -59,13 +61,20 @@ def check_for_updates() -> Tuple[bool, str]:
 
         # Count commits behind
         behind = subprocess.run(
-            ["git", "rev-list", "--count", f"HEAD..origin/main"],
+            [
+                "git", "rev-list", "--count",
+                f"HEAD..origin/{branch}",
+            ],
             cwd=cg_dir,
             capture_output=True,
             text=True,
             check=False,
         )
-        count = behind.stdout.strip() if behind.returncode == 0 else "?"
+        count = (
+            behind.stdout.strip()
+            if behind.returncode == 0
+            else "?"
+        )
 
         return True, f"{count} commit(s) behind remote"
 
@@ -87,8 +96,9 @@ def update_claudeghost() -> bool:
             )
             return False
 
+        branch = _get_default_branch(cg_dir)
         result = subprocess.run(
-            ["git", "pull", "origin", "main"],
+            ["git", "pull", "origin", branch],
             cwd=cg_dir,
             capture_output=True,
             text=True,
@@ -133,6 +143,20 @@ def print_update_notification(message: str) -> None:
     console.print(Panel(text, border_style="yellow", padding=(1, 2)))
 
 
+def _get_default_branch(cg_dir: Path) -> str:
+    """Detect the default remote branch (main or master)."""
+    for branch in ("main", "master"):
+        r = subprocess.run(
+            ["git", "rev-parse", "--verify", f"origin/{branch}"],
+            cwd=cg_dir,
+            capture_output=True,
+            check=False,
+        )
+        if r.returncode == 0:
+            return branch
+    return "main"
+
+
 def auto_update() -> None:
     """Check for updates and apply them automatically with a spinner.
 
@@ -142,7 +166,6 @@ def auto_update() -> None:
     normal launch flow is never blocked.
     """
     from rich.console import Console
-    from rich.status import Status
 
     console = Console()
 
@@ -152,100 +175,102 @@ def auto_update() -> None:
         if not git_dir.exists():
             return
 
-        # --- Phase 1: fetch + compare (quick) ---
-        with Status(
-            "[cyan]Checking for updates...[/cyan]",
-            console=console,
-            spinner="dots",
-        ):
-            subprocess.run(
-                ["git", "fetch", "origin", "--quiet"],
-                cwd=cg_dir,
-                capture_output=True,
-                check=False,
-                timeout=15,
-            )
+        # --- Phase 1: fetch + compare ---
+        console.print("[dim]Checking for updates...[/dim]")
 
-            local = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=cg_dir,
-                capture_output=True,
-                text=True,
-                check=False,
+        fetch = subprocess.run(
+            ["git", "fetch", "origin", "--quiet"],
+            cwd=cg_dir,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if fetch.returncode != 0:
+            console.print(
+                "[dim]✓ Skipped update check "
+                "(offline or no remote)[/dim]"
             )
-            remote = subprocess.run(
-                ["git", "rev-parse", "origin/main"],
-                cwd=cg_dir,
-                capture_output=True,
-                text=True,
-                check=False,
+            return
+
+        branch = _get_default_branch(cg_dir)
+
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cg_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        remote = subprocess.run(
+            ["git", "rev-parse", f"origin/{branch}"],
+            cwd=cg_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if local.returncode != 0 or remote.returncode != 0:
+            return
+
+        if local.stdout.strip() == remote.stdout.strip():
+            console.print(
+                f"[green]✓[/green] ClaudeGhost "
+                f"v{CURRENT_VERSION} — up to date"
             )
+            return
 
-            if (
-                local.returncode != 0
-                or remote.returncode != 0
-            ):
-                return
+        # How far behind?
+        behind = subprocess.run(
+            [
+                "git", "rev-list", "--count",
+                f"HEAD..origin/{branch}",
+            ],
+            cwd=cg_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        count = (
+            behind.stdout.strip()
+            if behind.returncode == 0
+            else "new"
+        )
 
-            if local.stdout.strip() == remote.stdout.strip():
-                console.print(
-                    f"[green]✓[/green] ClaudeGhost is up to date "
-                    f"(v{CURRENT_VERSION})"
-                )
-                return
-
-            # How far behind?
-            behind = subprocess.run(
-                [
-                    "git", "rev-list", "--count",
-                    "HEAD..origin/main",
-                ],
-                cwd=cg_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            count = (
-                behind.stdout.strip()
-                if behind.returncode == 0
-                else "new"
-            )
-
-        # --- Phase 2: pull + install (may take a moment) ---
-        with Status(
+        # --- Phase 2: pull + install ---
+        console.print(
             f"[yellow]Updating ClaudeGhost "
-            f"({count} update(s))...[/yellow]",
-            console=console,
-            spinner="dots",
-        ):
-            pull = subprocess.run(
-                ["git", "pull", "origin", "main"],
-                cwd=cg_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-            )
-            if pull.returncode != 0:
-                console.print(
-                    "[red]✗ Update failed "
-                    "(git pull error)[/red]"
-                )
-                logger.debug(
-                    "git pull stderr: %s", pull.stderr
-                )
-                return
+            f"({count} update(s))...[/yellow]"
+        )
 
-            subprocess.run(
-                [
-                    sys.executable, "-m", "pip", "install",
-                    "-r", "requirements.txt", "--quiet",
-                ],
-                cwd=cg_dir,
-                capture_output=True,
-                check=False,
-                timeout=120,
+        pull = subprocess.run(
+            ["git", "pull", "origin", branch],
+            cwd=cg_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if pull.returncode != 0:
+            console.print(
+                "[red]✗ Update failed (git pull error). "
+                "Try: git pull origin main[/red]"
             )
+            logger.debug(
+                "git pull stderr: %s", pull.stderr
+            )
+            return
+
+        console.print("[dim]Installing dependencies...[/dim]")
+        subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install",
+                "-r", "requirements.txt", "--quiet",
+            ],
+            cwd=cg_dir,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
 
         console.print(
             f"[green]✓ Updated to latest "

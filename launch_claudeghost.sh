@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ClaudeGhost Launcher (macOS / Linux)
-# Usage: ./launch_claudeghost.sh "your task" [level] [budget]
+# Usage: ./launch_claudeghost.sh
+#        ./launch_claudeghost.sh "your task" [level] [budget]
 # Example: ./launch_claudeghost.sh "Create a Python app" 3 10.00
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
