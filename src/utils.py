@@ -128,25 +128,27 @@ class GhostStatus:
 
     def build_layout(self) -> Layout:
         layout = Layout()
+
+        # Calculate panel heights from terminal size
+        term_h = console.height or 24
+        half_h = max(6, term_h // 2)
+
         layout.split_row(
             Layout(name="left", ratio=2),
             Layout(name="right", size=30),
         )
         layout["left"].split_column(
-            Layout(name="logs", ratio=1),
-            Layout(name="events", ratio=1),
+            Layout(name="logs", size=half_h),
+            Layout(name="events", size=half_h),
         )
         layout["right"].split_column(
             Layout(name="status"),
             Layout(name="stats"),
         )
 
-        # Dynamically calculate how many log lines fit
-        # in each panel (half terminal minus borders).
-        term_h = console.height or 24
-        # Each panel has 2 border lines + 1 title line ≈ 3 overhead
+        # How many log lines fit in each panel
         panel_overhead = 3
-        max_lines = max(3, (term_h // 2) - panel_overhead)
+        max_lines = max(3, half_h - panel_overhead)
 
         # Activity Log panel
         with self._lock:
@@ -165,7 +167,6 @@ class GhostStatus:
                 log_renderable,
                 title="Activity Log",
                 border_style="blue",
-                height=term_h // 2,
             )
         )
 
@@ -187,7 +188,6 @@ class GhostStatus:
                 evt_renderable,
                 title="Claude Code Events",
                 border_style="cyan",
-                height=term_h // 2,
             )
         )
 

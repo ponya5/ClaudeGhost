@@ -316,6 +316,7 @@ class GhostBridge:
         self._pty = None          # winpty PtyProcess
         self._child = None        # subprocess.Popen
         self._buffer: str = ""
+        self._display_buffer: str = ""  # non-JSON only
         self._state = CliState.THINKING
         self._running = False
         self._last_output_time = time.time()
@@ -323,6 +324,7 @@ class GhostBridge:
         self._num_turns: int = 0
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
+        self._pending_tool_event: Optional[StreamEvent] = None
 
     @property
     def state(self) -> CliState:
@@ -534,30 +536,53 @@ class GhostBridge:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                se = _parse_stream_event(stripped)
-                if se and se.display:
-                    ghost_status.add_event(se.display)
-                    # Count turns from assistant events
-                    if se.tool_name:
-                        self._num_turns += 1
-                        ghost_status.num_turns = self._num_turns
-                    # Or use num_turns from result event
-                    if (se.num_turns
-                            and se.num_turns > self._num_turns):
-                        self._num_turns = se.num_turns
-                        ghost_status.num_turns = self._num_turns
-                    if self._on_event:
-                        self._on_event(se)
-                elif not stripped.startswith("{"):
-                    ghost_status.add_log(
-                        stripped[:120]
-                    )
+                if stripped.startswith("{"):
+                    se = _parse_stream_event(stripped)
+                    if se and se.display:
+                        ghost_status.add_event(se.display)
+                        if se.tool_name:
+                            self._num_turns += 1
+                            ghost_status.num_turns = (
+                                self._num_turns
+                            )
+                            # Check if this tool needs
+                            # permission at current level
+                            allowed = (
+                                _LEVEL_ALLOWED_TOOLS.get(
+                                    self._afk_level, []
+                                )
+                            )
+                            tool_allowed = any(
+                                se.tool_name.lower()
+                                == a.lower()
+                                for a in allowed
+                            )
+                            if not tool_allowed:
+                                self._pending_tool_event = se
+                        if (se.num_turns
+                                and se.num_turns
+                                > self._num_turns):
+                            self._num_turns = se.num_turns
+                            ghost_status.num_turns = (
+                                self._num_turns
+                            )
+                        if self._on_event:
+                            self._on_event(se)
+                else:
+                    # Non-JSON line: add to display buffer
+                    # for state detection
+                    self._display_buffer += stripped + "\n"
+                    ghost_status.add_log(stripped[:120])
 
             self._parse_cost(clean)
             self._detect_state()
 
             if len(self._buffer) > 20_000:
                 self._buffer = self._buffer[-10_000:]
+            if len(self._display_buffer) > 10_000:
+                self._display_buffer = (
+                    self._display_buffer[-5_000:]
+                )
 
     def _read_chunk(self) -> Optional[str]:
         """Read a line of output. None on EOF."""
@@ -595,7 +620,31 @@ class GhostBridge:
     # State detection
     # ------------------------------------------------------------------
     def _detect_state(self) -> None:
-        tail = self._buffer[-3000:]
+        tail = self._display_buffer[-3000:]
+
+        # Check for tool-use events that need permission
+        # (detected from stream-json, not regex)
+        pending = self._pending_tool_event
+        if pending and pending.tool_name:
+            self._pending_tool_event = None
+            # Build a human-readable query description
+            tool = pending.tool_name
+            inp = pending.tool_input or ""
+            desc = f"{tool}: {inp}" if inp else tool
+            dedup_key = f"tool:{desc}"
+            if (
+                self._state != CliState.QUERY
+                or self._query_fired_for != dedup_key
+            ):
+                self._state = CliState.QUERY
+                self._query_fired_for = dedup_key
+                ghost_status.state = "QUERY"
+                logger.info("State -> QUERY (tool: %s)", tool)
+                self._on_query(
+                    f"Do you want to run this tool?\n"
+                    f"  {desc}"
+                )
+            return
 
         if (
             _QUERY_RE.search(tail)

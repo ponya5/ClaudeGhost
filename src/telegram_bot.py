@@ -78,7 +78,6 @@ class TelegramBot:
                 json={
                     "chat_id": self._chat_id,
                     "text": text,
-                    "parse_mode": "HTML",
                 },
                 timeout=10,
             )
@@ -96,6 +95,7 @@ class TelegramBot:
             logger.error("Telegram send failed: %s", exc)
             ghost_status.add_log("[red]Telegram send error[/red]")
             return False
+
 
     def send_file(self, file_path: str, caption: str = "") -> bool:
         """Send a file as a Telegram document attachment."""
