@@ -49,6 +49,8 @@ class ClaudeGhost:
         self._pending_query: Optional[str] = None
         self._pending_lock = threading.Lock()
         self._budget_warned = False
+        self._budget_warning_sent = False
+        self._budget_paused = False
         self._shutdown = threading.Event()
         self._changelog = ChangeLog(config.task, self.session_id)
 
@@ -69,6 +71,7 @@ class ClaudeGhost:
             on_query=self._handle_query,
             on_idle=self._handle_idle,
             on_stall=self._handle_stall,
+            afk_level=self.afk_level,
         )
 
         if self._telegram:
@@ -115,10 +118,14 @@ class ClaudeGhost:
             refresh_per_second=2,
             transient=False,
         ) as live:
-            while (
-                self._bridge.state != CliState.EXITED
-                and not self._shutdown.is_set()
-            ):
+            while not self._shutdown.is_set():
+                # Keep looping while budget-paused (waiting for
+                # user to top-up or stop) even if bridge exited
+                if (
+                    self._bridge.state == CliState.EXITED
+                    and not self._budget_paused
+                ):
+                    break
                 if self._screen and self._screen.check_pending():
                     live.stop()
                     self._screen.process_pending()
@@ -176,10 +183,14 @@ class ClaudeGhost:
     # -- Reply handling ------------------------------------------------------
 
     def _handle_reply(self, body: str) -> None:
-        if self._bridge is None:
+        if self._bridge is None and not self._budget_paused:
             return
         if self._telegram:
             ghost_status.stats.record_telegram_received()
+
+        # Budget-paused state takes priority
+        if self._handle_budget_reply(body):
+            return
 
         reply = body.strip()
         first_char = reply[0].upper() if reply else ""
@@ -195,7 +206,6 @@ class ClaudeGhost:
                     self._changelog.add_command(self._pending_query)
                 self._pending_query = None
             self._bridge.send("y")
-            self._budget_warned = False
             ghost_status.state = "RUNNING"
 
         elif first_char == "B":
@@ -247,18 +257,130 @@ class ClaudeGhost:
         )
 
     def _check_budget(self) -> None:
-        if self._bridge is None or self._budget_warned:
+        if self._bridge is None or self._budget_paused:
             return
-        if self._bridge.total_cost > self.config.budget_usd:
-            self._budget_warned = True
-            ghost_status.add_log("[bold red]BUDGET EXCEEDED[/bold red]")
-            ghost_status.state = "BUDGET_PAUSE"
-            self._request_approval(
-                f"BUDGET EXCEEDED\n"
-                f"Used: ${self._bridge.total_cost:.2f}"
-                f" / ${self.config.budget_usd:.2f}\n"
-                f"Reply [A] to continue or [D] to kill."
+        cost = self._bridge.total_cost
+        budget = self.config.budget_usd
+
+        if cost <= 0 or budget <= 0:
+            return
+
+        pct = (cost / budget) * 100
+
+        # Early warning at 80%
+        if pct >= 80 and not self._budget_warning_sent:
+            self._budget_warning_sent = True
+            ghost_status.add_log(
+                f"[bold yellow]Budget warning: "
+                f"{pct:.0f}% used[/bold yellow]"
             )
+            self._notify(
+                f"⚠️ Budget at {pct:.0f}%\n"
+                f"Used: ${cost:.2f} / ${budget:.2f}\n"
+                f"The session will stop when the budget is reached."
+            )
+
+        # Budget exceeded — stop and ask user
+        if cost >= budget and not self._budget_warned:
+            self._budget_warned = True
+            self._budget_paused = True
+            ghost_status.add_log(
+                "[bold red]BUDGET EXCEEDED — paused[/bold red]"
+            )
+            ghost_status.state = "BUDGET_PAUSE"
+
+            # Kill the running process to stop spending
+            self._bridge.kill()
+
+            self._request_approval(
+                f"⛔ BUDGET REACHED — execution stopped\n"
+                f"Used: ${cost:.2f} / ${budget:.2f}\n\n"
+                f"Options:\n"
+                f"[T <amount>] Top-up budget "
+                f"(e.g. T 5 adds $5.00)\n"
+                f"[S] Stop — end the session"
+            )
+
+    def _handle_budget_reply(self, reply: str) -> bool:
+        """Handle a reply while in budget-paused state.
+
+        Returns True if the reply was consumed, False otherwise.
+        """
+        if not self._budget_paused:
+            return False
+
+        upper = reply.strip().upper()
+
+        # --- Stop / terminate ---
+        if upper.startswith("S") or upper.startswith("D"):
+            self._budget_paused = False
+            ghost_status.add_log(
+                "[red]User chose to stop after budget limit.[/red]"
+            )
+            ghost_status.state = "EXITED"
+            self._notify("Session ended by user (budget limit).")
+            self._shutdown.set()
+            return True
+
+        # --- Top-up: "T 5" or "T 10.00" ---
+        if upper.startswith("T"):
+            parts = reply.strip().split(None, 1)
+            topup = 0.0
+            if len(parts) > 1:
+                try:
+                    topup = float(
+                        parts[1].strip().lstrip("$")
+                    )
+                except ValueError:
+                    pass
+
+            if topup <= 0:
+                self._notify(
+                    "Invalid amount. Reply with:\n"
+                    "[T <amount>] e.g. T 5\n"
+                    "[S] Stop"
+                )
+                return True
+
+            old_budget = self.config.budget_usd
+            new_budget = old_budget + topup
+            self.config.budget_usd = new_budget
+            settings.max_budget_usd = new_budget
+            ghost_status.budget_max = new_budget
+
+            # Reset budget flags so checks work for the new limit
+            self._budget_warned = False
+            self._budget_warning_sent = False
+            self._budget_paused = False
+
+            ghost_status.add_log(
+                f"[green]Budget topped up: "
+                f"${old_budget:.2f} → ${new_budget:.2f}[/green]"
+            )
+            self._notify(
+                f"✅ Budget updated: ${new_budget:.2f}\n"
+                f"Resuming task..."
+            )
+
+            # Restart the Claude process with the new budget
+            self._bridge = GhostBridge(
+                task=self.task,
+                on_query=self._handle_query,
+                on_idle=self._handle_idle,
+                on_stall=self._handle_stall,
+                afk_level=self.afk_level,
+            )
+            self._bridge.start()
+            ghost_status.state = "RUNNING"
+            return True
+
+        # Unrecognised reply while paused
+        self._notify(
+            "Budget is paused. Reply with:\n"
+            "[T <amount>] Top-up (e.g. T 5)\n"
+            "[S] Stop"
+        )
+        return True
 
     def _send_summary(self) -> None:
         assert self._bridge is not None

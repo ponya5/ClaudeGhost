@@ -57,30 +57,71 @@ class ScreenNotifier:
             return
 
         console.print()
-        console.print(Panel(
-            message,
-            title="[bold yellow]Approval Required[/bold yellow]",
-            border_style="yellow",
-            padding=(1, 2),
-        ))
-        console.print()
-        console.print("[bold]Options:[/bold]")
-        console.print("  [A] Approve  [B] Block  [C] Context  [D] Detonate")
-        console.print()
 
-        response = Prompt.ask(
-            "Your choice",
-            choices=["a", "A", "b", "B", "c", "C", "d", "D"],
-            show_choices=False,
-        ).upper()
+        # Detect budget-pause messages to show the right options
+        is_budget = "BUDGET" in message.upper() or "Top-up" in message
 
-        if response == "C":
-            context = Prompt.ask("Enter context/instruction")
-            response = f"C {context}"
+        if is_budget:
+            console.print(Panel(
+                message,
+                title="[bold red]Budget Limit Reached[/bold red]",
+                border_style="red",
+                padding=(1, 2),
+            ))
+            console.print()
+            console.print("[bold]Options:[/bold]")
+            console.print(
+                "  [T <amount>] Top-up budget (e.g. T 5)"
+            )
+            console.print("  [S] Stop — end the session")
+            console.print()
 
-        ghost_status.add_log(f"[cyan]Screen response:[/cyan] {response[:30]}")
-        if self._response_callback:
-            self._response_callback(response)
+            while True:
+                raw = Prompt.ask("Your choice").strip()
+                upper = raw.upper()
+                if upper.startswith("T") or upper.startswith("S"):
+                    ghost_status.add_log(
+                        f"[cyan]Screen response:[/cyan] {raw[:30]}"
+                    )
+                    if self._response_callback:
+                        self._response_callback(raw)
+                    return
+                console.print(
+                    "[red]Please reply T <amount> or S[/red]"
+                )
+        else:
+            console.print(Panel(
+                message,
+                title="[bold yellow]Approval Required[/bold yellow]",
+                border_style="yellow",
+                padding=(1, 2),
+            ))
+            console.print()
+            console.print("[bold]Options:[/bold]")
+            console.print(
+                "  [A] Approve  [B] Block  "
+                "[C] Context  [D] Detonate"
+            )
+            console.print()
+
+            response = Prompt.ask(
+                "Your choice",
+                choices=[
+                    "a", "A", "b", "B",
+                    "c", "C", "d", "D",
+                ],
+                show_choices=False,
+            ).upper()
+
+            if response == "C":
+                context = Prompt.ask("Enter context/instruction")
+                response = f"C {context}"
+
+            ghost_status.add_log(
+                f"[cyan]Screen response:[/cyan] {response[:30]}"
+            )
+            if self._response_callback:
+                self._response_callback(response)
 
     def disable(self) -> None:
         """Disable and clear pending requests."""

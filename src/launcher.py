@@ -87,32 +87,39 @@ def select_afk_level() -> int:
 
 
 def select_budget() -> float:
-    """Interactive budget selection."""
+    """Interactive budget selection with arrow keys."""
+    from src.arrow_select import arrow_select
+    from src.config import BUDGET_PRESETS
+
     console.print("[bold]Step 4: Set Budget Limit (Quota)[/bold]\n")
-    table = Table(show_header=True, header_style="bold magenta", box=None)
-    table.add_column("Preset", width=12)
-    table.add_column("Amount", width=10)
 
-    for name, amount in BUDGET_PRESETS.items():
+    options: list[tuple[str, str]] = []
+    amounts: list[float] = []
+    default_idx = 0
+
+    for i, (name, amount) in enumerate(BUDGET_PRESETS.items()):
         if amount > 100:
-            table.add_row(name.capitalize(), "[dim]No limit[/dim]")
+            options.append((name.capitalize(), "No limit"))
         else:
-            table.add_row(name.capitalize(), f"${amount:.2f}")
-    table.add_row("[cyan]custom[/cyan]", "[cyan]Enter amount[/cyan]")
-    console.print(table)
-    console.print()
+            options.append((name.capitalize(), f"${amount:.2f}"))
+        amounts.append(amount)
+        if name == settings.budget_preset:
+            default_idx = i
 
-    presets = list(BUDGET_PRESETS.keys()) + ["custom"]
-    choice = Prompt.ask(
-        "Select preset or 'custom'",
-        choices=presets,
-        default=settings.budget_preset,
-    )
+    options.append(("Custom", "Enter amount"))
+    amounts.append(-1)
 
-    if choice == "custom":
+    idx = arrow_select(options, default_index=default_idx)
+    if idx is None:
+        idx = default_idx
+
+    if amounts[idx] < 0:
+        # Custom amount
         while True:
             try:
-                amount = float(Prompt.ask("Enter budget in USD", default="5.00"))
+                amount = float(
+                    Prompt.ask("Enter budget in USD", default="5.00")
+                )
                 if amount < 0:
                     console.print("[red]Budget must be positive[/red]")
                     continue
@@ -120,12 +127,16 @@ def select_budget() -> float:
             except ValueError:
                 console.print("[red]Invalid number[/red]")
     else:
-        amount = BUDGET_PRESETS[choice]
+        amount = amounts[idx]
 
     if amount > 100:
-        console.print("  [green]>[/green] Budget: [bold]Unlimited[/bold]\n")
+        console.print(
+            "  [green]>[/green] Budget: [bold]Unlimited[/bold]\n"
+        )
     else:
-        console.print(f"  [green]>[/green] Budget: [bold]${amount:.2f}[/bold]\n")
+        console.print(
+            f"  [green]>[/green] Budget: [bold]${amount:.2f}[/bold]\n"
+        )
     return amount
 
 

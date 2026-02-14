@@ -26,6 +26,17 @@ if sys.platform == "win32":
     _USE_PEXPECT = False
 
 # ---------------------------------------------------------------------------
+# AFK level -> --allowedTools mapping for headless (-p) mode on Windows
+# ---------------------------------------------------------------------------
+_LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
+    1: [],                                          # Paranoid: nothing auto-approved
+    2: ["Read"],                                    # Auditor: read only
+    3: ["Read", "Write", "Edit"],                   # Manager: read + write
+    4: ["Read", "Write", "Edit", "Bash"],           # Director: read + write + execute
+    5: ["Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch"],  # God Mode: everything
+}
+
+# ---------------------------------------------------------------------------
 # ANSI cleaner
 # ---------------------------------------------------------------------------
 _ANSI_RE = re.compile(
@@ -55,6 +66,16 @@ _QUERY_RE = re.compile(
 )
 _PROMPT_RE = re.compile(r"(?:^|\n)\s*>\s*$", re.MULTILINE)
 _COST_RE = re.compile(r"(?i)(?:cost|total|spent)[:\s]*\$?([\d]+\.[\d]{2})")
+
+# JSON cost patterns from stream-json output
+_JSON_COST_RE = re.compile(r'"costUSD"\s*:\s*([\d]+\.[\d]+)')
+_JSON_COST_TOTAL_RE = re.compile(
+    r'"cost"\s*:\s*\{[^}]*"total"\s*:\s*([\d]+\.[\d]+)'
+)
+# Also match "Total cost: $X.XX" from /cost command output
+_TOTAL_COST_RE = re.compile(
+    r"Total cost:\s*\$?([\d]+\.[\d]{2})"
+)
 
 # Claude Code's actual tool-use permission patterns
 _TOOL_QUERY_RE = re.compile(
@@ -86,11 +107,13 @@ class GhostBridge:
         on_query: Callable[[str], None],
         on_idle: Optional[Callable[[], None]] = None,
         on_stall: Optional[Callable[[], None]] = None,
+        afk_level: int = 3,
     ) -> None:
         self.task = task
         self._on_query = on_query
         self._on_idle = on_idle
         self._on_stall = on_stall
+        self._afk_level = max(1, min(5, afk_level))
 
         self._child: Optional[object] = None  # pexpect.spawn or subprocess.Popen
         self._buffer: str = ""
@@ -185,10 +208,36 @@ class GhostBridge:
             )
 
     def _start_subprocess(self, binary: str, cwd: str) -> None:
-        # On Windows, .cmd files need shell=True to execute properly
+        # On Windows, Claude Code's interactive TUI doesn't work with piped
+        # stdin/stdout.  Use headless mode (-p) with --allowedTools mapped
+        # from the AFK level so that permission handling still works.
+        # Use stream-json output so we can parse cost from structured data.
+        args = [
+            binary, "-p", self.task,
+            "--output-format", "stream-json",
+            "--verbose",
+        ]
+
+        allowed = _LEVEL_ALLOWED_TOOLS.get(self._afk_level, [])
+        for tool in allowed:
+            args.extend(["--allowedTools", tool])
+
+        # Enforce budget at the Claude Code level — this is the hard limit.
+        # Claude Code will stop itself when this budget is reached.
+        budget = settings.max_budget_usd
+        if budget and 0 < budget < 999:
+            args.extend(["--max-budget-usd", str(budget)])
+
         use_shell = sys.platform == "win32"
+        logger.info("Subprocess args: %s", args)
+        ghost_status.add_log(
+            f"[bold]Headless mode:[/bold] level {self._afk_level}, "
+            f"allowed tools: {', '.join(allowed) or 'none'}, "
+            f"budget: ${budget:.2f}"
+        )
+
         self._child = subprocess.Popen(
-            [binary, self.task],
+            args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -283,15 +332,48 @@ class GhostBridge:
                 ghost_status.state = "THINKING"
 
     def _parse_cost(self, text: str) -> None:
+        best = self._total_cost
+
+        # Pattern 1: stream-json "costUSD": 0.37
+        for m in _JSON_COST_RE.finditer(text):
+            try:
+                val = float(m.group(1))
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+        # Pattern 2: JSON "cost": {"total": 0.55}
+        for m in _JSON_COST_TOTAL_RE.finditer(text):
+            try:
+                val = float(m.group(1))
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+        # Pattern 3: "Total cost: $0.55" from /cost output
+        for m in _TOTAL_COST_RE.finditer(text):
+            try:
+                val = float(m.group(1))
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+        # Pattern 4: generic "cost/total/spent: $X.XX"
         for m in _COST_RE.finditer(text):
             try:
                 val = float(m.group(1))
-                if val > self._total_cost:
-                    self._total_cost = val
-                    ghost_status.budget_used = val
-                    logger.info("Budget update: $%.2f", val)
+                if val > best:
+                    best = val
             except ValueError:
                 pass
+
+        if best > self._total_cost:
+            self._total_cost = best
+            ghost_status.budget_used = best
+            logger.info("Budget update: $%.4f", best)
 
     # ------------------------------------------------------------------
     # Heartbeat / stall detection

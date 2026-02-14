@@ -116,6 +116,7 @@ class ClaudeGhostSetup:
 
     def configure_autonomy(self):
         _print("\n[bold]Step 3:[/bold] Autonomy & Budget\n")
+        _print("[dim]Setting default values — you can change these anytime in .env or when launching a session.[/dim]\n")
 
         if HAS_RICH and console:
             table = Table(show_header=True, header_style="bold cyan", box=box.SIMPLE)
@@ -132,8 +133,35 @@ class ClaudeGhostSetup:
         level = _ask("Choose AFK level (1-5)", "3")
         self.config["DEFAULT_AFK_LEVEL"] = level
 
-        budget = _ask("Max budget per session (USD)", "10.00")
-        self.config["MAX_BUDGET_USD"] = budget
+        # Budget selection with arrow keys
+        _print("\n[bold]Max budget per session:[/bold]\n")
+        try:
+            from src.arrow_select import arrow_select
+            budget_options = [
+                ("Micro",     "$0.50"),
+                ("Small",     "$2.00"),
+                ("Medium",    "$5.00"),
+                ("Large",     "$10.00"),
+                ("XLarge",    "$25.00"),
+                ("Unlimited", "No limit"),
+            ]
+            budget_values = [
+                "0.50", "2.00", "5.00",
+                "10.00", "25.00", "999.99",
+            ]
+            idx = arrow_select(budget_options, default_index=3)
+            if idx is not None:
+                self.config["MAX_BUDGET_USD"] = budget_values[idx]
+            else:
+                self.config["MAX_BUDGET_USD"] = "10.00"
+        except Exception:
+            # Fallback if arrow select fails (e.g. piped input)
+            budget = _ask(
+                "Max budget per session (USD)", "10.00"
+            )
+            self.config["MAX_BUDGET_USD"] = budget
+
+        _print("\n[dim]These defaults are saved in .env and can be overridden per session or edited later.[/dim]")
 
     def write_env(self) -> bool:
         if not self.env_example.exists():
@@ -175,7 +203,16 @@ class ClaudeGhostSetup:
 
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": "ClaudeGhost setup complete!"},
+                json={
+                    "chat_id": chat_id,
+                    "text": (
+                        "✅ ClaudeGhost setup complete!\n\n"
+                        "To start using ClaudeGhost:\n"
+                        "1. Open a terminal → run: claude\n"
+                        "2. Open a second terminal → run the launch script\n\n"
+                        "You'll receive task updates and approval requests here."
+                    ),
+                },
                 timeout=10,
             )
             if r.json().get("ok"):
@@ -188,23 +225,40 @@ class ClaudeGhostSetup:
             return False
 
     def show_completion(self):
+        import platform
+        is_windows = platform.system() == "Windows"
+        launch_cmd = "launch_claudeghost.bat" if is_windows else "./launch_claudeghost.sh"
+
         if HAS_RICH and console:
             console.print(Panel.fit(
-                "[bold green]Setup Complete![/bold green]\n\n"
-                "[bold]Quick Start:[/bold]\n"
-                '  python -m src.launcher "your task" --level 3\n\n'
+                "[bold green]ClaudeGhost Setup Complete![/bold green]\n\n"
+                "[bold]How to use:[/bold]\n"
+                "  1. Open a terminal and start [cyan]Claude Code[/cyan]:\n"
+                "       claude\n\n"
+                "  2. Open a [bold]second terminal[/bold] and launch ClaudeGhost:\n"
+                f"       {launch_cmd}\n\n"
+                "[bold]Or run directly:[/bold]\n"
+                '  python claudeghost.py "your task" --level 3\n\n'
                 "[bold]Test connection:[/bold]\n"
                 "  python -m src.cli config test\n\n"
-                "[dim]Docs: README.md | MANUAL.md[/dim]",
+                "[dim]All settings saved in .env (edit anytime).\n"
+                "Docs: README.md | MANUAL.md[/dim]",
                 border_style="green",
                 box=box.DOUBLE,
             ))
         else:
             print("\n" + "=" * 50)
-            print("  Setup Complete!")
+            print("  ClaudeGhost Setup Complete!")
             print("=" * 50)
-            print('\n  Quick Start: python -m src.launcher "your task" --level 3')
-            print("  Test: python -m src.cli config test\n")
+            print("\n  How to use:")
+            print("    1. Open a terminal and start Claude Code:")
+            print("         claude")
+            print(f"\n    2. Open a second terminal and run:")
+            print(f"         {launch_cmd}")
+            print('\n  Or run directly:')
+            print('    python claudeghost.py "your task" --level 3')
+            print("\n  Test: python -m src.cli config test")
+            print("  All settings saved in .env (edit anytime).\n")
 
     def run(self) -> bool:
         try:
