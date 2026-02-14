@@ -44,7 +44,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) for complete installation instructions.
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/yourusername/ClaudeGhost.git
+git clone https://github.com/ponya5/ClaudeGhost.git
 cd ClaudeGhost
 pip install -r requirements.txt
 ```
