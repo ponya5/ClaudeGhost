@@ -141,9 +141,16 @@ class GhostStatus:
             Layout(name="stats"),
         )
 
-        # Activity Log panel — show last N lines that fit
+        # Dynamically calculate how many log lines fit
+        # in each panel (half terminal minus borders).
+        term_h = console.height or 24
+        # Each panel has 2 border lines + 1 title line ≈ 3 overhead
+        panel_overhead = 3
+        max_lines = max(3, (term_h // 2) - panel_overhead)
+
+        # Activity Log panel
         with self._lock:
-            recent_logs = list(self._log_lines[-50:])
+            recent_logs = list(self._log_lines[-max_lines:])
         log_body = (
             "\n".join(recent_logs)
             if recent_logs
@@ -158,12 +165,13 @@ class GhostStatus:
                 log_renderable,
                 title="Activity Log",
                 border_style="blue",
+                height=term_h // 2,
             )
         )
 
         # Claude Code Events panel
         with self._lock:
-            recent_events = list(self._event_lines[-50:])
+            recent_events = list(self._event_lines[-max_lines:])
         if recent_events:
             evt_body = "\n".join(recent_events)
         else:
@@ -179,6 +187,7 @@ class GhostStatus:
                 evt_renderable,
                 title="Claude Code Events",
                 border_style="cyan",
+                height=term_h // 2,
             )
         )
 
