@@ -12,7 +12,7 @@ from typing import Optional
 from rich.live import Live
 from rich.prompt import Confirm
 
-from src.bridge import GhostBridge, CliState
+from src.bridge import GhostBridge, CliState, StreamEvent
 from src.guardian import (
     Decision,
     evaluate,
@@ -58,6 +58,7 @@ class ClaudeGhost:
         ghost_status.current_task = config.task
         ghost_status.afk_level = config.afk_level
         ghost_status.level_name = config.level_name
+        ghost_status.model = config.model
         ghost_status.budget_max = config.budget_usd
         ghost_status.telegram_enabled = config.telegram_enabled
 
@@ -71,7 +72,9 @@ class ClaudeGhost:
             on_query=self._handle_query,
             on_idle=self._handle_idle,
             on_stall=self._handle_stall,
+            on_event=self._handle_event,
             afk_level=self.afk_level,
+            model=self.config.model,
         )
 
         if self._telegram:
@@ -256,6 +259,38 @@ class ClaudeGhost:
             f"The process may be hanging."
         )
 
+    def _handle_event(self, event: StreamEvent) -> None:
+        """Record stream events into the changelog."""
+        if event.tool_name:
+            name = event.tool_name.lower()
+            if name in ("write", "edit", "editfile",
+                        "writefile", "create"):
+                if event.file_path:
+                    self._changelog.add_file_change(event.file_path)
+                    self._changelog.add_change(
+                        f"{event.tool_name}: {event.file_path}"
+                    )
+            elif name in ("bash", "execute"):
+                if event.tool_input:
+                    self._changelog.add_command(event.tool_input)
+                    self._changelog.add_change(
+                        f"Executed: {event.tool_input[:200]}"
+                    )
+            elif name in ("read", "readfile"):
+                if event.file_path:
+                    self._changelog.add_change(
+                        f"Read: {event.file_path}"
+                    )
+            else:
+                desc = event.tool_input or ""
+                self._changelog.add_change(
+                    f"{event.tool_name}: {desc[:200]}"
+                )
+        if event.result_text:
+            self._changelog.add_change(
+                f"Result: {event.result_text[:300]}"
+            )
+
     def _check_budget(self) -> None:
         if self._bridge is None or self._budget_paused:
             return
@@ -368,7 +403,9 @@ class ClaudeGhost:
                 on_query=self._handle_query,
                 on_idle=self._handle_idle,
                 on_stall=self._handle_stall,
+                on_event=self._handle_event,
                 afk_level=self.afk_level,
+                model=self.config.model,
             )
             self._bridge.start()
             ghost_status.state = "RUNNING"
@@ -385,6 +422,7 @@ class ClaudeGhost:
     def _send_summary(self) -> None:
         assert self._bridge is not None
         s = ghost_status.stats
+        turns = self._bridge.num_turns
 
         # Finalize and save changelog
         self._changelog.finalize()
@@ -395,6 +433,7 @@ class ClaudeGhost:
             f"Task: {self.task}\n"
             f"Duration: {s.elapsed_formatted}\n"
             f"Cost: ${self._bridge.total_cost:.2f}\n"
+            f"Turns: {turns}\n"
             f"Queries: {s.queries_total} "
             f"(auto:{s.queries_auto_approved} "
             f"user:{s.queries_user_approved} "
@@ -423,7 +462,11 @@ class ClaudeGhost:
             f"  Cost: ${self._bridge.total_cost:.2f}"
             f" / ${self.config.budget_usd:.2f}"
         )
-        console.print(f"  Queries: {s.queries_total} total")
+        console.print(f"  Turns: {turns}")
+        if s.queries_total > 0:
+            console.print(
+                f"  Queries: {s.queries_total} total"
+            )
 
         if changelog_path:
             console.print(
@@ -468,6 +511,10 @@ def main() -> None:
         "--interactive", "-i", action="store_true",
         help="Force interactive mode",
     )
+    parser.add_argument(
+        "--model", "-m", type=str, default=None,
+        help="Claude model (sonnet, opus, haiku, or full name)",
+    )
     args = parser.parse_args()
 
     # Auto-update before anything else
@@ -486,10 +533,15 @@ def main() -> None:
                 level=args.level or settings.default_afk_level,
                 budget=args.budget or settings.max_budget_usd,
                 telegram=not args.no_telegram,
+                model=args.model,
             )
             console.print("[bold blue]ClaudeGhost v2.0[/bold blue]")
             console.print(f"  Task  : {config.task[:60]}")
-            console.print(f"  Level : {config.afk_level} ({config.level_name})")
+            console.print(f"  Model : {config.model}")
+            console.print(
+                f"  Level : {config.afk_level}"
+                f" ({config.level_name})"
+            )
             console.print(f"  Budget: ${config.budget_usd:.2f}")
             notify = "Telegram" if config.telegram_enabled else "Screen"
             console.print(f"  Notify: {notify}")

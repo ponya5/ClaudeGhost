@@ -115,18 +115,86 @@ class ClaudeGhostSetup:
         self.config["TELEGRAM_CHAT_ID"] = _ask("Your chat ID")
 
     def configure_autonomy(self):
-        _print("\n[bold]Step 3:[/bold] Autonomy & Budget\n")
-        _print("[dim]Setting default values — you can change these anytime in .env or when launching a session.[/dim]\n")
+        # --- Working directory ---
+        _print("\n[bold]Step 3:[/bold] Working Directory\n")
+        _print(
+            "  ClaudeGhost needs to know where your"
+            " [bold]project files[/bold] live."
+        )
+        _print(
+            "  Claude Code will read/write files in"
+            " this directory.\n"
+        )
+        _print(
+            "  [dim]Example: C:\\Users\\You\\Projects"
+            "\\MyApp[/dim]"
+        )
+        _print(
+            "  [dim]Leave blank to use current"
+            " directory (.) when launching[/dim]\n"
+        )
+        cwd = _ask("Project working directory", ".")
+        self.config["WORKING_DIRECTORY"] = cwd
+        if cwd and cwd != ".":
+            _print(
+                f"  [green]>[/green] Working dir:"
+                f" [bold]{cwd}[/bold]\n"
+            )
+        else:
+            _print(
+                "  [green]>[/green] Working dir:"
+                " [bold]. (current directory)[/bold]\n"
+            )
+
+        # --- Default model ---
+        _print("[bold]Step 4:[/bold] Default Claude Model\n")
+        try:
+            from src.arrow_select import arrow_select
+            model_options = [
+                ("Sonnet", "Fast, balanced (recommended)"),
+                ("Opus", "Smartest, slower, pricier"),
+                ("Haiku", "Fastest, cheapest"),
+            ]
+            model_keys = ["sonnet", "opus", "haiku"]
+            idx = arrow_select(model_options, default_index=0)
+            if idx is not None:
+                self.config["CLAUDE_MODEL"] = model_keys[idx]
+            else:
+                self.config["CLAUDE_MODEL"] = "sonnet"
+        except Exception:
+            model = _ask(
+                "Default model (sonnet/opus/haiku)", "sonnet"
+            )
+            self.config["CLAUDE_MODEL"] = model
+        _print(
+            f"  [green]>[/green] Model:"
+            f" [bold]{self.config['CLAUDE_MODEL']}[/bold]\n"
+        )
+
+        # --- Autonomy & budget ---
+        _print("[bold]Step 5:[/bold] Autonomy & Budget\n")
+        _print(
+            "[dim]Setting default values — you can change"
+            " these anytime in .env or when launching"
+            " a session.[/dim]\n"
+        )
 
         if HAS_RICH and console:
-            table = Table(show_header=True, header_style="bold cyan", box=box.SIMPLE)
+            table = Table(
+                show_header=True,
+                header_style="bold cyan",
+                box=box.SIMPLE,
+            )
             table.add_column("Level", style="cyan", width=6)
             table.add_column("Name", style="yellow", width=12)
             table.add_column("Description")
             table.add_row("1", "Paranoid", "Ask for everything")
             table.add_row("2", "Auditor", "Auto-approve reads only")
             table.add_row("3", "Manager", "Auto-approve reads + writes")
-            table.add_row("4", "Director", "Auto-approve reads + writes + execute")
+            table.add_row(
+                "4", "Director",
+                "Auto-approve reads + writes + execute",
+            )
             table.add_row("5", "God Mode", "Auto-approve everything")
             console.print(table)
 
@@ -155,13 +223,16 @@ class ClaudeGhostSetup:
             else:
                 self.config["MAX_BUDGET_USD"] = "10.00"
         except Exception:
-            # Fallback if arrow select fails (e.g. piped input)
             budget = _ask(
                 "Max budget per session (USD)", "10.00"
             )
             self.config["MAX_BUDGET_USD"] = budget
 
-        _print("\n[dim]These defaults are saved in .env and can be overridden per session or edited later.[/dim]")
+        _print(
+            "\n[dim]These defaults are saved in .env and"
+            " can be overridden per session or edited"
+            " later.[/dim]"
+        )
 
     def write_env(self) -> bool:
         if not self.env_example.exists():
@@ -169,21 +240,43 @@ class ClaudeGhostSetup:
             return False
 
         content = self.env_example.read_text(encoding="utf-8")
+
+        # Map config keys to their placeholder defaults
+        placeholders = {
+            "TELEGRAM_BOT_TOKEN": "your_bot_token_here",
+            "TELEGRAM_CHAT_ID": "your_chat_id_here",
+            "DEFAULT_AFK_LEVEL": "3",
+            "MAX_BUDGET_USD": "10.00",
+            "CLAUDE_MODEL": "sonnet",
+            "WORKING_DIRECTORY": ".",
+        }
         for key, value in self.config.items():
-            placeholder = f"{key}=" + {
-                "TELEGRAM_BOT_TOKEN": "your_bot_token_here",
-                "TELEGRAM_CHAT_ID": "your_chat_id_here",
-                "DEFAULT_AFK_LEVEL": "3",
-                "MAX_BUDGET_USD": "10.00",
-            }.get(key, "")
-            content = content.replace(placeholder, f"{key}={value}")
+            default = placeholders.get(key, "")
+            placeholder = f"{key}={default}"
+            replacement = f"{key}={value}"
+            if placeholder in content:
+                content = content.replace(
+                    placeholder, replacement,
+                )
+            elif f"{key}=" in content:
+                # Replace existing value
+                import re
+                content = re.sub(
+                    rf"^{key}=.*$",
+                    replacement,
+                    content,
+                    flags=re.MULTILINE,
+                )
+            else:
+                # Append if not found
+                content += f"\n{replacement}\n"
 
         self.env_file.write_text(content, encoding="utf-8")
         _print("\n[green]OK[/green] Configuration saved to .env")
         return True
 
     def test_connection(self) -> bool:
-        _print("\n[bold]Step 4:[/bold] Testing Telegram connection...\n")
+        _print("\n[bold]Step 6:[/bold] Testing Telegram connection...\n")
 
         try:
             import requests

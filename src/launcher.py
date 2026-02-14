@@ -15,6 +15,7 @@ from src.config import (
     BUDGET_PRESETS,
     LEVEL_NAMES,
     LEVEL_DESCRIPTIONS,
+    MODEL_OPTIONS,
 )
 
 console = Console()
@@ -58,9 +59,46 @@ def print_banner() -> None:
     console.print()
 
 
+def select_model() -> str:
+    """Interactive model selection."""
+    from src.arrow_select import arrow_select
+
+    console.print("[bold]Step 2: Select Claude Model[/bold]\n")
+
+    options: list[tuple[str, str]] = []
+    keys: list[str] = []
+    default_idx = 0
+
+    for i, (key, desc) in enumerate(MODEL_OPTIONS.items()):
+        options.append((key.capitalize(), desc))
+        keys.append(key)
+        if key == settings.claude_model:
+            default_idx = i
+
+    options.append(("Custom", "Enter full model name"))
+    keys.append("_custom")
+
+    idx = arrow_select(options, default_index=default_idx)
+    if idx is None:
+        idx = default_idx
+
+    if keys[idx] == "_custom":
+        model = Prompt.ask(
+            "Model name",
+            default=settings.claude_model,
+        )
+    else:
+        model = keys[idx]
+
+    console.print(
+        f"  [green]>[/green] Model: [bold]{model}[/bold]\n"
+    )
+    return model
+
+
 def select_afk_level() -> int:
     """Interactive AFK level selection."""
-    console.print("[bold]Step 2: Select AFK Autonomy Level[/bold]\n")
+    console.print("[bold]Step 3: Select AFK Autonomy Level[/bold]\n")
     table = Table(show_header=True, header_style="bold magenta", box=None)
     table.add_column("Level", style="bold", width=8)
     table.add_column("Name", width=12)
@@ -95,7 +133,7 @@ def select_budget() -> float:
     from src.arrow_select import arrow_select
     from src.config import BUDGET_PRESETS
 
-    console.print("[bold]Step 4: Set Budget Limit (Quota)[/bold]\n")
+    console.print("[bold]Step 5: Set Budget Limit (Quota)[/bold]\n")
 
     options: list[tuple[str, str]] = []
     amounts: list[float] = []
@@ -146,7 +184,7 @@ def select_budget() -> float:
 
 def select_notification_mode() -> bool:
     """Select Telegram or screen-only notification."""
-    console.print("[bold]Step 3: Communication Method[/bold]\n")
+    console.print("[bold]Step 4: Communication Method[/bold]\n")
     console.print("  [1] [green]Telegram[/green] - Get approval requests on your phone")
     console.print("  [2] [cyan]Screen Only[/cyan] - Show prompts in terminal\n")
 
@@ -192,6 +230,7 @@ def confirm_and_execute(config: SessionConfig) -> bool:
 
     short_task = config.task[:60] + ("..." if len(config.task) > 60 else "")
     summary.add_row("Task:", short_task)
+    summary.add_row("Model:", config.model)
     summary.add_row("AFK Level:", f"{config.afk_level} ({config.level_name})")
     budget_str = "Unlimited" if config.budget_usd > 100 else f"${config.budget_usd:.2f}"
     summary.add_row("Budget:", budget_str)
@@ -210,14 +249,17 @@ def run_interactive_launcher() -> Optional[SessionConfig]:
     try:
         # Step 1: Task
         task = enter_task()
-        
-        # Step 2: AFK Level
+
+        # Step 2: Model
+        model = select_model()
+
+        # Step 3: AFK Level
         afk_level = select_afk_level()
         
-        # Step 3: Communication Method
+        # Step 4: Communication Method
         telegram_enabled = select_notification_mode()
         
-        # Step 4: Budget/Quota
+        # Step 5: Budget/Quota
         budget = select_budget()
 
         config = SessionConfig(
@@ -225,6 +267,7 @@ def run_interactive_launcher() -> Optional[SessionConfig]:
             afk_level=afk_level,
             budget_usd=budget,
             telegram_enabled=telegram_enabled,
+            model=model,
         )
         if confirm_and_execute(config):
             return config
@@ -240,6 +283,7 @@ def run_quick_launcher(
     level: int = 3,
     budget: float = 5.0,
     telegram: bool = True,
+    model: str | None = None,
 ) -> SessionConfig:
     """Create a session config directly without interactive prompts."""
     return SessionConfig(
@@ -247,4 +291,5 @@ def run_quick_launcher(
         afk_level=level,
         budget_usd=budget,
         telegram_enabled=telegram,
+        model=model,
     )

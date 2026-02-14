@@ -90,10 +90,12 @@ class GhostStatus:
         self.current_task: str = "N/A"
         self.afk_level: int = 3
         self.level_name: str = "Manager"
+        self.model: str = "sonnet"
         self.budget_used: float = 0.0
         self.budget_max: float = 5.0
         self.state: str = "STARTING"
         self.telegram_enabled: bool = True
+        self.num_turns: int = 0
         self.stats: SessionStats = SessionStats()
         self._log_lines: list[str] = []
         self._event_lines: list[str] = []
@@ -105,6 +107,8 @@ class GhostStatus:
             self._event_lines = []
         self.state = "STARTING"
         self.budget_used = 0.0
+        self.num_turns = 0
+        self.model = "sonnet"
         self.stats = SessionStats()
 
     def add_log(self, msg: str) -> None:
@@ -126,20 +130,20 @@ class GhostStatus:
         layout = Layout()
         layout.split_row(
             Layout(name="left", ratio=2),
-            Layout(name="right", ratio=1),
+            Layout(name="right", size=30),
         )
         layout["left"].split_column(
             Layout(name="logs", ratio=1),
             Layout(name="events", ratio=1),
         )
         layout["right"].split_column(
-            Layout(name="status", ratio=1),
-            Layout(name="stats", ratio=1),
+            Layout(name="status"),
+            Layout(name="stats"),
         )
 
-        # Activity Log panel
+        # Activity Log panel — show last N lines that fit
         with self._lock:
-            recent_logs = list(self._log_lines[-15:])
+            recent_logs = list(self._log_lines[-50:])
         log_body = (
             "\n".join(recent_logs)
             if recent_logs
@@ -159,7 +163,7 @@ class GhostStatus:
 
         # Claude Code Events panel
         with self._lock:
-            recent_events = list(self._event_lines[-15:])
+            recent_events = list(self._event_lines[-50:])
         if recent_events:
             evt_body = "\n".join(recent_events)
         else:
@@ -197,6 +201,9 @@ class GhostStatus:
         )
         status_tbl.add_row(
             "Task:", _safe_markup(self.current_task[:50])
+        )
+        status_tbl.add_row(
+            "Model:", f"[cyan]{self.model}[/cyan]"
         )
         status_tbl.add_row(
             "AFK Level:",
@@ -240,6 +247,9 @@ class GhostStatus:
         stats_tbl.add_row(
             "Elapsed:",
             f"[bold]{self.stats.elapsed_formatted}[/bold]",
+        )
+        stats_tbl.add_row(
+            "Turns:", f"[bold]{self.num_turns}[/bold]"
         )
         stats_tbl.add_row(
             "Queries:", str(self.stats.queries_total)

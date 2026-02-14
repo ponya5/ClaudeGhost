@@ -109,8 +109,24 @@ class CliState(str, Enum):
 # ---------------------------------------------------------------------------
 # Stream-JSON event parser
 # ---------------------------------------------------------------------------
-def _parse_stream_event(line: str) -> Optional[str]:
-    """Parse a stream-json line into a human-readable summary."""
+class StreamEvent:
+    """Parsed stream-json event with display and changelog data."""
+    __slots__ = ("display", "tool_name", "tool_input",
+                 "file_path", "result_text", "cost",
+                 "num_turns")
+
+    def __init__(self) -> None:
+        self.display: Optional[str] = None
+        self.tool_name: Optional[str] = None
+        self.tool_input: Optional[str] = None
+        self.file_path: Optional[str] = None
+        self.result_text: Optional[str] = None
+        self.cost: Optional[float] = None
+        self.num_turns: Optional[int] = None
+
+
+def _parse_stream_event(line: str) -> Optional[StreamEvent]:
+    """Parse a stream-json line into a StreamEvent."""
     line = line.strip()
     if not line:
         return None
@@ -120,6 +136,7 @@ def _parse_stream_event(line: str) -> Optional[str]:
         return None
 
     etype = evt.get("type", "")
+    se = StreamEvent()
 
     if etype == "assistant":
         msg = evt.get("message", {})
@@ -140,8 +157,10 @@ def _parse_stream_event(line: str) -> Optional[str]:
             elif btype == "tool_use":
                 name = block.get("name", "tool")
                 inp = block.get("input", {})
+                se.tool_name = name
                 if name.lower() in ("bash", "execute"):
                     cmd = inp.get("command", "")
+                    se.tool_input = cmd
                     parts.append(
                         f"[cyan]⚡ {name}:[/cyan] "
                         f"{cmd[:100]}"
@@ -153,6 +172,7 @@ def _parse_stream_event(line: str) -> Optional[str]:
                         "file_path",
                         inp.get("path", ""),
                     )
+                    se.file_path = path
                     parts.append(
                         f"[dim]📖 Read:[/dim] {path}"
                     )
@@ -164,23 +184,28 @@ def _parse_stream_event(line: str) -> Optional[str]:
                         "file_path",
                         inp.get("path", ""),
                     )
+                    se.file_path = path
+                    se.tool_input = path
                     parts.append(
                         f"[yellow]✏️  Edit:[/yellow]"
                         f" {path}"
                     )
                 else:
+                    se.tool_input = str(inp)[:200]
                     parts.append(
                         f"[magenta]🔧 {name}[/magenta]"
                     )
         if parts:
-            return " | ".join(parts)
+            se.display = " | ".join(parts)
+            return se
 
     if etype == "content_block_delta":
         delta = evt.get("delta", {})
         if delta.get("type") == "text_delta":
             text = delta.get("text", "").strip()
             if text and len(text) > 5:
-                return text[:120]
+                se.display = text[:120]
+                return se
 
     if etype == "result":
         cost = (
@@ -196,51 +221,63 @@ def _parse_stream_event(line: str) -> Optional[str]:
                     if c:
                         cost = c
                         break
-        num_turns = evt.get("num_turns", "")
+        if cost:
+            se.cost = float(cost)
+        num_turns = evt.get("num_turns", 0)
+        if num_turns:
+            try:
+                se.num_turns = int(num_turns)
+            except (ValueError, TypeError):
+                pass
         duration = evt.get("duration_ms", 0)
         dur_s = (
             f"{duration / 1000:.1f}s" if duration else ""
         )
+        result_text = evt.get("result", "")
+        if isinstance(result_text, str) and result_text.strip():
+            se.result_text = result_text.strip()
         if cost:
-            return (
+            se.display = (
                 f"[green]✓ Done[/green] — "
                 f"cost: ${float(cost):.4f}"
-                f" turns: {num_turns}"
+                f" turns: {se.num_turns or num_turns}"
                 f" {dur_s}"
             )
-        result_text = evt.get("result", "")
-        if (
-            isinstance(result_text, str)
-            and result_text.strip()
-        ):
-            return (
+            return se
+        if se.result_text:
+            se.display = (
                 f"[green]✓[/green] "
-                f"{result_text[:100]}"
+                f"{se.result_text[:100]}"
             )
+            return se
 
     if etype == "system":
         sub = evt.get("subtype", "")
         if sub == "init":
             model = evt.get("model", "")
             cwd = evt.get("cwd", "")
-            return (
+            se.display = (
                 f"[green]⚙ Initialized[/green]"
                 f" model={model}"
                 f" cwd={cwd[-40:]}"
             )
+            return se
         if sub == "hook_started":
             name = evt.get("hook_name", "")
-            return f"[dim]🔗 Hook: {name}[/dim]"
+            se.display = f"[dim]🔗 Hook: {name}[/dim]"
+            return se
         if sub == "hook_response":
             name = evt.get("hook_name", "")
             outcome = evt.get("outcome", "")
-            return (
+            se.display = (
                 f"[dim]🔗 Hook done: {name}"
                 f" ({outcome})[/dim]"
             )
+            return se
         msg = evt.get("message", "")
         if isinstance(msg, str) and msg.strip():
-            return f"[dim]{msg[:120]}[/dim]"
+            se.display = f"[dim]{msg[:120]}[/dim]"
+            return se
 
     return None
 
@@ -264,13 +301,17 @@ class GhostBridge:
         on_query: Callable[[str], None],
         on_idle: Optional[Callable[[], None]] = None,
         on_stall: Optional[Callable[[], None]] = None,
+        on_event: Optional[Callable[["StreamEvent"], None]] = None,
         afk_level: int = 3,
+        model: str = "sonnet",
     ) -> None:
         self.task = task
         self._on_query = on_query
         self._on_idle = on_idle
         self._on_stall = on_stall
+        self._on_event = on_event
         self._afk_level = max(1, min(5, afk_level))
+        self._model = model
 
         self._pty = None          # winpty PtyProcess
         self._child = None        # subprocess.Popen
@@ -279,6 +320,7 @@ class GhostBridge:
         self._running = False
         self._last_output_time = time.time()
         self._total_cost: float = 0.0
+        self._num_turns: int = 0
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
 
@@ -289,6 +331,10 @@ class GhostBridge:
     @property
     def total_cost(self) -> float:
         return self._total_cost
+
+    @property
+    def num_turns(self) -> int:
+        return self._num_turns
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -363,6 +409,9 @@ class GhostBridge:
             "--output-format", "stream-json",
             "--verbose",
         ]
+
+        if self._model:
+            cmd_parts += ["--model", self._model]
 
         allowed = _LEVEL_ALLOWED_TOOLS.get(
             self._afk_level, []
@@ -485,9 +534,20 @@ class GhostBridge:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                readable = _parse_stream_event(stripped)
-                if readable:
-                    ghost_status.add_event(readable)
+                se = _parse_stream_event(stripped)
+                if se and se.display:
+                    ghost_status.add_event(se.display)
+                    # Count turns from assistant events
+                    if se.tool_name:
+                        self._num_turns += 1
+                        ghost_status.num_turns = self._num_turns
+                    # Or use num_turns from result event
+                    if (se.num_turns
+                            and se.num_turns > self._num_turns):
+                        self._num_turns = se.num_turns
+                        ghost_status.num_turns = self._num_turns
+                    if self._on_event:
+                        self._on_event(se)
                 elif not stripped.startswith("{"):
                     ghost_status.add_log(
                         stripped[:120]

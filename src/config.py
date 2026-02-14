@@ -34,6 +34,12 @@ LEVEL_DESCRIPTIONS: dict[int, str] = {
     5: "Auto-approve ALL (notify only for high-risk)",
 }
 
+MODEL_OPTIONS: dict[str, str] = {
+    "sonnet": "Claude Sonnet (fast, balanced)",
+    "opus": "Claude Opus (smartest, slower)",
+    "haiku": "Claude Haiku (fastest, cheapest)",
+}
+
 
 class Settings(BaseSettings):
     """Global application settings loaded from .env and environment."""
@@ -58,6 +64,7 @@ class Settings(BaseSettings):
 
     # Claude
     claude_binary: str = Field(default="claude")
+    claude_model: str = Field(default="sonnet")
     working_directory: str = Field(default=".")
 
     # Timing
@@ -78,12 +85,16 @@ class SessionConfig:
         budget_usd: float = 5.0,
         telegram_enabled: bool = True,
         working_directory: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> None:
         self.task = task
         self.afk_level = max(1, min(5, afk_level))
         self.budget_usd = budget_usd
         self.telegram_enabled = telegram_enabled
-        self.working_directory = working_directory or settings.working_directory
+        self.working_directory = (
+            working_directory or settings.working_directory
+        )
+        self.model = model or settings.claude_model
 
     @property
     def level_name(self) -> str:

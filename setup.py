@@ -15,13 +15,13 @@ setup(
     description="Headless Supervisor for the Anthropic Claude CLI with Telegram notifications",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="ClaudeGhost Contributors",
+    author="Daniel Shalom",
     author_email="",
-    url="https://github.com/yourusername/ClaudeGhost",
+    url="https://github.com/ponya5/ClaudeGhost",
     project_urls={
-        "Bug Tracker": "https://github.com/yourusername/ClaudeGhost/issues",
-        "Documentation": "https://github.com/yourusername/ClaudeGhost#readme",
-        "Source Code": "https://github.com/yourusername/ClaudeGhost",
+        "Bug Tracker": "https://github.com/ponya5/ClaudeGhost/issues",
+        "Documentation": "https://github.com/ponya5/ClaudeGhost#readme",
+        "Source Code": "https://github.com/ponya5/ClaudeGhost",
     },
     keywords="claude ai automation telegram bot supervisor cli",
     classifiers=[
@@ -40,6 +40,7 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "pexpect>=4.9.0;platform_system!='Windows'",
+        "pywinpty>=2.0.0;platform_system=='Windows'",
         "requests>=2.31.0",
         "rich>=13.7.0",
         "pydantic>=2.5.0",

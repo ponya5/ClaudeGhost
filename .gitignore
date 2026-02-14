@@ -71,6 +71,10 @@ hello.txt
 daniel.md
 test_*.txt
 demo_*.txt
+_test_*
 
 # User config
 .claudeghost/
+
+# Benchmarks
+.benchmarks/
