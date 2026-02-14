@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 import time
 import threading
@@ -11,6 +12,19 @@ from typing import Callable, Optional
 
 from src.config import settings
 from src.utils import logger, ghost_status
+
+# ---------------------------------------------------------------------------
+# Windows: use winpty for real-time PTY output (Node buffers
+# stdout when it detects a non-TTY pipe).
+# ---------------------------------------------------------------------------
+_HAS_WINPTY = False
+_PtyProcess = None  # type: ignore
+if sys.platform == "win32":
+    try:
+        from winpty import PtyProcess as _PtyProcess
+        _HAS_WINPTY = True
+    except ImportError:
+        pass
 
 # ---------------------------------------------------------------------------
 # AFK level -> --allowedTools mapping for headless (-p) mode
@@ -25,6 +39,7 @@ _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
         "Bash", "WebFetch", "WebSearch",
     ],
 }
+
 
 # ---------------------------------------------------------------------------
 # ANSI cleaner
@@ -59,12 +74,13 @@ _TOTAL_COST_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# State detection patterns (used for pexpect / TUI mode)
+# State detection patterns
 # ---------------------------------------------------------------------------
 _QUERY_RE = re.compile(
     r"(?i)"
     r"(do you want to "
-    r"(run|create|edit|delete|execute|overwrite|write|allow|remove))"
+    r"(run|create|edit|delete|execute"
+    r"|overwrite|write|allow|remove))"
     r"|(\(y\/n\))"
     r"|(\(Y\)es|\(N\)o)"
     r"|(approve this|allow this|proceed\s*\?)"
@@ -79,7 +95,7 @@ _TOOL_QUERY_RE = re.compile(
     r"(claude wants to (run|execute|use|call))"
     r"|(tool:\s*\w+)"
     r"|(bash\s*\()"
-    r"|(command:\s*.+)"
+    r"|(command:\s*.+)",
 )
 
 
@@ -94,10 +110,7 @@ class CliState(str, Enum):
 # Stream-JSON event parser
 # ---------------------------------------------------------------------------
 def _parse_stream_event(line: str) -> Optional[str]:
-    """Parse a stream-json line into a human-readable summary.
-
-    Returns None if the line is not interesting.
-    """
+    """Parse a stream-json line into a human-readable summary."""
     line = line.strip()
     if not line:
         return None
@@ -108,7 +121,6 @@ def _parse_stream_event(line: str) -> Optional[str]:
 
     etype = evt.get("type", "")
 
-    # --- Assistant messages ---
     if etype == "assistant":
         msg = evt.get("message", {})
         content = msg.get("content", [])
@@ -163,7 +175,6 @@ def _parse_stream_event(line: str) -> Optional[str]:
         if parts:
             return " | ".join(parts)
 
-    # --- Streaming text delta ---
     if etype == "content_block_delta":
         delta = evt.get("delta", {})
         if delta.get("type") == "text_delta":
@@ -171,14 +182,12 @@ def _parse_stream_event(line: str) -> Optional[str]:
             if text and len(text) > 5:
                 return text[:120]
 
-    # --- Result / completion ---
     if etype == "result":
         cost = (
             evt.get("total_cost_usd")
             or evt.get("cost_usd")
             or evt.get("costUSD")
         )
-        # Also check modelUsage for cost
         if not cost:
             mu = evt.get("modelUsage", {})
             for v in mu.values():
@@ -189,7 +198,9 @@ def _parse_stream_event(line: str) -> Optional[str]:
                         break
         num_turns = evt.get("num_turns", "")
         duration = evt.get("duration_ms", 0)
-        dur_s = f"{duration / 1000:.1f}s" if duration else ""
+        dur_s = (
+            f"{duration / 1000:.1f}s" if duration else ""
+        )
         if cost:
             return (
                 f"[green]✓ Done[/green] — "
@@ -207,7 +218,6 @@ def _parse_stream_event(line: str) -> Optional[str]:
                 f"{result_text[:100]}"
             )
 
-    # --- System messages ---
     if etype == "system":
         sub = evt.get("subtype", "")
         if sub == "init":
@@ -239,13 +249,13 @@ def _parse_stream_event(line: str) -> Optional[str]:
 # Bridge
 # ---------------------------------------------------------------------------
 class GhostBridge:
-    """Wraps the claude CLI in a subprocess and provides
-    programmatic I/O with state detection.
+    """Wraps the claude CLI and provides programmatic I/O
+    with state detection.
 
-    Both Windows and macOS/Linux use headless mode
-    (``claude -p`` with ``--output-format stream-json``)
-    so that ClaudeGhost can reliably parse events and
-    display them in the dashboard.
+    On Windows: uses ``winpty`` (ConPTY) so that Node.js
+    sees a real TTY and flushes output in real-time.
+    On macOS/Linux: uses ``subprocess.Popen`` (no buffering
+    issue on Unix with line-buffered pipes).
     """
 
     def __init__(
@@ -262,7 +272,8 @@ class GhostBridge:
         self._on_stall = on_stall
         self._afk_level = max(1, min(5, afk_level))
 
-        self._child: Optional[subprocess.Popen] = None
+        self._pty = None          # winpty PtyProcess
+        self._child = None        # subprocess.Popen
         self._buffer: str = ""
         self._state = CliState.THINKING
         self._running = False
@@ -293,8 +304,10 @@ class GhostBridge:
             f'[bold]Spawning:[/bold] {binary} '
             f'"{self.task[:50]}"'
         )
-        self._start_headless(binary, cwd)
+
+        self._build_and_spawn(binary, cwd)
         self._running = True
+
         threading.Thread(
             target=self._read_loop, daemon=True,
         ).start()
@@ -303,10 +316,14 @@ class GhostBridge:
         ).start()
 
     def send(self, text: str) -> None:
-        """Inject text into the running process stdin."""
+        """Inject text into the running process."""
         logger.info("Injecting: %r", text)
-        ghost_status.add_log(f"[yellow]>>> {text}[/yellow]")
-        if (
+        ghost_status.add_log(
+            f"[yellow]>>> {text}[/yellow]"
+        )
+        if self._pty is not None:
+            self._pty.write(text + "\r\n")
+        elif (
             self._child
             and self._child.stdin
             and self._child.poll() is None
@@ -317,7 +334,9 @@ class GhostBridge:
     def kill(self) -> None:
         self._running = False
         try:
-            if self._child:
+            if self._pty is not None:
+                self._pty.close(force=True)
+            elif self._child:
                 self._child.terminate()
                 try:
                     self._child.wait(timeout=5)
@@ -332,13 +351,15 @@ class GhostBridge:
         )
 
     # ------------------------------------------------------------------
-    # Spawn (headless on all platforms)
+    # Spawn
     # ------------------------------------------------------------------
-    def _start_headless(
+    def _build_and_spawn(
         self, binary: str, cwd: str,
     ) -> None:
-        args = [
-            binary, "-p", self.task,
+        """Build the command and spawn via winpty or
+        subprocess depending on platform."""
+        cmd_parts = [binary, "-p", self.task]
+        cmd_parts += [
             "--output-format", "stream-json",
             "--verbose",
         ]
@@ -347,16 +368,15 @@ class GhostBridge:
             self._afk_level, []
         )
         for tool in allowed:
-            args.extend(["--allowedTools", tool])
+            cmd_parts += ["--allowedTools", tool]
 
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
-            args.extend([
+            cmd_parts += [
                 "--max-budget-usd", str(budget),
-            ])
+            ]
 
-        use_shell = sys.platform == "win32"
-        logger.info("Subprocess args: %s", args)
+        logger.info("Command: %s", cmd_parts)
         ghost_status.add_log(
             f"[bold]Headless mode:[/bold] "
             f"level {self._afk_level}, "
@@ -369,15 +389,60 @@ class GhostBridge:
             "events will appear here ↓[/bold green]"
         )
 
+        if _HAS_WINPTY and sys.platform == "win32":
+            self._spawn_winpty(cmd_parts, cwd)
+        else:
+            self._spawn_subprocess(cmd_parts, cwd)
+
+    def _spawn_winpty(
+        self, cmd_parts: list[str], cwd: str,
+    ) -> None:
+        """Spawn via winpty ConPTY (Windows).
+
+        winpty gives us a real TTY so Node.js flushes
+        output line-by-line instead of buffering.
+        """
+        # Resolve the binary to its full path so winpty
+        # can find it via cmd.exe
+        binary = cmd_parts[0]
+        resolved = shutil.which(binary)
+        if resolved:
+            binary = resolved
+
+        # Build a single command string for cmd.exe
+        # Quote the task (arg index 2) which may have
+        # spaces.
+        parts = [f'"{binary}"']
+        for i, arg in enumerate(cmd_parts[1:], 1):
+            if " " in arg or '"' in arg:
+                parts.append(f'"{arg}"')
+            else:
+                parts.append(arg)
+        cmd_str = "cmd.exe /c " + " ".join(parts)
+
+        logger.info("winpty cmd: %s", cmd_str)
+        ghost_status.add_log(
+            "[dim]Using winpty (ConPTY) for "
+            "real-time output[/dim]"
+        )
+
+        self._pty = _PtyProcess.spawn(
+            cmd_str,
+            cwd=cwd if cwd != "." else None,
+        )
+
+    def _spawn_subprocess(
+        self, cmd_parts: list[str], cwd: str,
+    ) -> None:
+        """Spawn via subprocess (macOS / Linux)."""
         self._child = subprocess.Popen(
-            args,
+            cmd_parts,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
             cwd=cwd if cwd != "." else None,
-            shell=use_shell,
         )
 
     # ------------------------------------------------------------------
@@ -410,18 +475,14 @@ class GhostBridge:
             clean = strip_ansi(chunk)
             self._buffer += clean
 
-            # Parse each line of output
             for line in clean.splitlines():
                 stripped = line.strip()
                 if not stripped:
                     continue
-
-                # Try stream-json parsing first
                 readable = _parse_stream_event(stripped)
                 if readable:
                     ghost_status.add_event(readable)
                 elif not stripped.startswith("{"):
-                    # Non-JSON (stderr, plain text)
                     ghost_status.add_log(
                         stripped[:120]
                     )
@@ -433,16 +494,36 @@ class GhostBridge:
                 self._buffer = self._buffer[-10_000:]
 
     def _read_chunk(self) -> Optional[str]:
-        """Read a line from stdout. None on EOF."""
-        if self._child is None or self._child.stdout is None:
-            return None
-        try:
-            line = self._child.stdout.readline()
-            if not line and self._child.poll() is not None:
+        """Read a line of output. None on EOF."""
+        # winpty path
+        if self._pty is not None:
+            try:
+                if not self._pty.isalive():
+                    return None
+                line = self._pty.readline()
+                return line if line else ""
+            except EOFError:
                 return None
-            return line
-        except (OSError, ValueError):
-            return None
+            except Exception:
+                return None
+
+        # subprocess path
+        if (
+            self._child is not None
+            and self._child.stdout is not None
+        ):
+            try:
+                line = self._child.stdout.readline()
+                if (
+                    not line
+                    and self._child.poll() is not None
+                ):
+                    return None
+                return line
+            except (OSError, ValueError):
+                return None
+
+        return None
 
     # ------------------------------------------------------------------
     # State detection
