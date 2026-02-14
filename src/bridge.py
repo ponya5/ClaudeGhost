@@ -409,15 +409,21 @@ class GhostBridge:
         if resolved:
             binary = resolved
 
-        # Build a single command string for cmd.exe
-        # Quote the task (arg index 2) which may have
-        # spaces.
-        parts = [f'"{binary}"']
-        for i, arg in enumerate(cmd_parts[1:], 1):
-            if " " in arg or '"' in arg:
-                parts.append(f'"{arg}"')
-            else:
-                parts.append(arg)
+        # Build a single command string for cmd.exe.
+        # Only quote args that contain spaces/quotes.
+        # NOTE: cmd.exe /c has special quoting rules —
+        # if the first char after /c is a double-quote,
+        # cmd strips the outermost quotes from the
+        # entire string, which breaks paths. So we only
+        # quote the binary when it actually has spaces.
+        def _quote_if_needed(s: str) -> str:
+            if " " in s or '"' in s:
+                return f'"{s}"'
+            return s
+
+        parts = [_quote_if_needed(binary)]
+        for arg in cmd_parts[1:]:
+            parts.append(_quote_if_needed(arg))
         cmd_str = "cmd.exe /c " + " ".join(parts)
 
         logger.info("winpty cmd: %s", cmd_str)
