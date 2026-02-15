@@ -202,6 +202,7 @@ class ClaudeGhost:
             has_pending = self._pending_query is not None
 
         if first_char == "A":
+            # Approve: Send 'y' to approve the agent's proposed action
             ghost_status.add_log("[green]User APPROVED.[/green]")
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
@@ -212,23 +213,16 @@ class ClaudeGhost:
             ghost_status.state = "RUNNING"
 
         elif first_char == "B":
-            ghost_status.add_log("[red]User BLOCKED.[/red]")
+            # Block: Send 'n' to reject the action, agent will offer alternative
+            ghost_status.add_log("[red]User BLOCKED - agent will provide alternative.[/red]")
             ghost_status.stats.record_blocked()
             self._bridge.send("n")
             with self._pending_lock:
                 self._pending_query = None
             ghost_status.state = "RUNNING"
 
-        elif first_char == "D":
-            ghost_status.add_log(
-                "[bold red]DETONATE - killing process.[/bold red]"
-            )
-            self._notify("Process killed by user.")
-            self._bridge.kill()
-            with self._pending_lock:
-                self._pending_query = None
-
         elif first_char == "C":
+            # Context: User provides additional instructions/context
             context = reply[1:].strip() if len(reply) > 1 else ""
             if not context:
                 self._notify(
@@ -239,16 +233,31 @@ class ClaudeGhost:
             ghost_status.add_log(
                 f"[cyan]Context injected:[/cyan] {context[:60]}"
             )
+            # Send the context as user input to guide the agent
             self._bridge.send(context)
             with self._pending_lock:
                 self._pending_query = None
             ghost_status.state = "RUNNING"
 
+        elif first_char == "D":
+            # Detonate: Kill the session immediately
+            ghost_status.add_log(
+                "[bold red]DETONATE - session terminated by user.[/bold red]"
+            )
+            self._notify("🛑 Session terminated by user (Detonate).")
+            self._bridge.kill()
+            with self._pending_lock:
+                self._pending_query = None
+            ghost_status.state = "EXITED"
+            self._shutdown.set()
+
         else:
             self._notify(
                 "Unknown reply. Use:\n"
-                "[A] Approve\n[B] Block\n"
-                "[C <text>] Context\n[D] Detonate"
+                "[A] Approve - Accept the proposed action\n"
+                "[B] Block - Reject and ask for alternative\n"
+                "[C <text>] Context - Provide additional instructions\n"
+                "[D] Detonate - End session immediately"
             )
 
     # -- Other callbacks -----------------------------------------------------
