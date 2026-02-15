@@ -109,6 +109,25 @@ def classify_command(command: str) -> RiskCategory:
     cmd = command.strip()
     if not cmd:
         return RiskCategory.EXECUTE
+    
+    # Check if this is a Claude Code tool (format: "ToolName: args")
+    tool_match = re.match(r"^(\w+):\s*", cmd)
+    if tool_match:
+        tool_name = tool_match.group(1).lower()
+        # Classify Claude Code tools
+        if tool_name in ("read", "readfile", "list", "listfiles"):
+            return RiskCategory.READ_ONLY
+        elif tool_name in ("write", "writefile", "edit", "editfile", "create", "createfile"):
+            return RiskCategory.WRITE
+        elif tool_name in ("bash", "execute", "shell", "run"):
+            return RiskCategory.EXECUTE
+        elif tool_name in ("websearch", "search", "fetch", "http", "api"):
+            return RiskCategory.EXECUTE  # Web operations are execute-level
+        else:
+            # Unknown tool, treat as execute
+            return RiskCategory.EXECUTE
+    
+    # Regular bash command classification
     if _HIGH_RISK_PATTERNS.search(cmd):
         return RiskCategory.HIGH_RISK
     if _EXECUTE_PATTERNS.search(cmd):
@@ -145,7 +164,20 @@ def extract_command_from_query(query_text: str) -> Optional[str]:
         Claude wants to run: bash("rm -rf ./db")
     or:
         Command: rm -rf ./db
+    or:
+        Do you want to run this tool?
+          WebSearch: {'query': 'weather forecast'}
     """
+    # Pattern for Claude Code tools (WebSearch, Read, Write, etc.)
+    m = re.search(
+        r"(?:tool|use)\s*\?\s*\n\s*(\w+):\s*(.+)",
+        query_text, re.IGNORECASE | re.DOTALL
+    )
+    if m:
+        tool_name = m.group(1).strip()
+        tool_args = m.group(2).strip()[:200]  # Limit length
+        return f"{tool_name}: {tool_args}"
+    
     # Pattern 1: "Do you want to run this command?\n  <cmd>"
     m = re.search(
         r"(?:do you want to|wants to)\s+(?:run|execute|use).*?\n\s*(.+)",
@@ -189,12 +221,20 @@ def _clean_extracted(cmd: str) -> str:
 def format_approval_message(command: str, category: RiskCategory) -> str:
     label, icon = _RISK_LABELS[category]
     return (
-        f"Approval Needed\n"
-        f"Command: {command}\n"
-        f"Risk: {icon} {label}\n\n"
-        f"Reply:\n"
-        f"[A] Approve\n"
-        f"[B] Block\n"
-        f"[C <text>] Context\n"
-        f"[D] Detonate (kill)"
+        f"╔══════════════════════════╗\n"
+        f"║   ⚠️  APPROVAL NEEDED   ║\n"
+        f"╚══════════════════════════╝\n"
+        f"\n"
+        f"🔧 Command:\n"
+        f"   {command}\n"
+        f"\n"
+        f"🎯 Risk: {icon} {label}\n"
+        f"\n"
+        f"┌─────────────────────────┐\n"
+        f"│  Reply with:            │\n"
+        f"│  A  ✅ Approve          │\n"
+        f"│  B  🚫 Block            │\n"
+        f"│  C <text> 💬 Context    │\n"
+        f"│  D  💀 Detonate (kill)  │\n"
+        f"└─────────────────────────┘"
     )

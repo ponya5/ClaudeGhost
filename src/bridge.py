@@ -28,6 +28,11 @@ if sys.platform == "win32":
 
 # ---------------------------------------------------------------------------
 # AFK level -> --allowedTools mapping for headless (-p) mode
+# Level 1 (Paranoid):  Nothing auto-approved
+# Level 2 (Auditor):   Read-only tools auto-approved
+# Level 3 (Manager):   Read + Write tools auto-approved
+# Level 4 (Director):  Read + Write + Execute auto-approved
+# Level 5 (God Mode):  Everything auto-approved
 # ---------------------------------------------------------------------------
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
     1: [],
@@ -325,6 +330,8 @@ class GhostBridge:
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
         self._pending_tool_event: Optional[StreamEvent] = None
+        self._approval_event = threading.Event()
+        self._approval_event.set()  # Start unblocked
 
     @property
     def state(self) -> CliState:
@@ -369,6 +376,8 @@ class GhostBridge:
         ghost_status.add_log(
             f"[yellow]>>> {text}[/yellow]"
         )
+        # Unblock the read loop if it was waiting for approval
+        self._approval_event.set()
         if self._pty is not None:
             self._pty.write(text + "\r\n")
         elif (
@@ -381,6 +390,8 @@ class GhostBridge:
 
     def kill(self) -> None:
         self._running = False
+        # Unblock read loop if waiting for approval
+        self._approval_event.set()
         try:
             if self._pty is not None:
                 self._pty.close(force=True)
@@ -640,10 +651,14 @@ class GhostBridge:
                 self._query_fired_for = dedup_key
                 ghost_status.state = "QUERY"
                 logger.info("State -> QUERY (tool: %s)", tool)
+                # Block the read loop until user responds
+                self._approval_event.clear()
                 self._on_query(
                     f"Do you want to run this tool?\n"
                     f"  {desc}"
                 )
+                # Wait for user response (send() will unblock)
+                self._approval_event.wait()
             return
 
         if (
@@ -659,7 +674,11 @@ class GhostBridge:
                 self._query_fired_for = dedup_key
                 ghost_status.state = "QUERY"
                 logger.info("State -> QUERY")
+                # Block the read loop until user responds
+                self._approval_event.clear()
                 self._on_query(tail)
+                # Wait for user response (send() will unblock)
+                self._approval_event.wait()
         elif _PROMPT_RE.search(tail):
             if self._state != CliState.IDLE:
                 self._state = CliState.IDLE

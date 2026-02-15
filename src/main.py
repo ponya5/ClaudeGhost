@@ -80,10 +80,13 @@ class ClaudeGhost:
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
             self._notify(
-                f"ClaudeGhost started\n"
-                f"Task: {self.task}\n"
-                f"AFK Level: {self.afk_level} ({self.config.level_name})\n"
-                f"Budget: ${self.config.budget_usd:.2f}"
+                f"╔══════════════════════════╗\n"
+                f"║  👻 ClaudeGhost Started  ║\n"
+                f"╚══════════════════════════╝\n"
+                f"\n"
+                f"📋 Task: {self.task}\n"
+                f"🤖 AFK Level: {self.afk_level} ({self.config.level_name})\n"
+                f"💰 Budget: ${self.config.budget_usd:.2f}"
             )
         elif self._screen:
             self._screen.set_callback(self._handle_reply)
@@ -169,7 +172,7 @@ class ClaudeGhost:
             ghost_status.stats.record_auto_approve()
             self._changelog.add_command(command)
             if self.afk_level == 5:
-                self._notify(f"Auto-approved (God Mode): {command[:200]}")
+                self._notify(f"⚡ Auto-approved (God Mode): {command[:200]}")
             assert self._bridge is not None
             self._bridge.send("y")
         else:
@@ -226,7 +229,7 @@ class ClaudeGhost:
             context = reply[1:].strip() if len(reply) > 1 else ""
             if not context:
                 self._notify(
-                    "Please provide context text after C.\n"
+                    "💬 Please provide context text after C.\n"
                     "Example: C Please use Python 3.11 syntax"
                 )
                 return
@@ -244,7 +247,7 @@ class ClaudeGhost:
             ghost_status.add_log(
                 "[bold red]DETONATE - session terminated by user.[/bold red]"
             )
-            self._notify("🛑 Session terminated by user (Detonate).")
+            self._notify("🛑 Session terminated by user.")
             self._bridge.kill()
             with self._pending_lock:
                 self._pending_query = None
@@ -253,11 +256,15 @@ class ClaudeGhost:
 
         else:
             self._notify(
-                "Unknown reply. Use:\n"
-                "[A] Approve - Accept the proposed action\n"
-                "[B] Block - Reject and ask for alternative\n"
-                "[C <text>] Context - Provide additional instructions\n"
-                "[D] Detonate - End session immediately"
+                "❓ Unknown reply.\n"
+                "\n"
+                "┌─────────────────────────┐\n"
+                "│  Reply with:            │\n"
+                "│  A  ✅ Approve          │\n"
+                "│  B  🚫 Block            │\n"
+                "│  C <text> 💬 Context    │\n"
+                "│  D  💀 Detonate (kill)  │\n"
+                "└─────────────────────────┘"
             )
 
     # -- Other callbacks -----------------------------------------------------
@@ -267,8 +274,8 @@ class ClaudeGhost:
 
     def _handle_stall(self) -> None:
         self._notify(
-            f"Stall detected - no output for "
-            f"{settings.heartbeat_timeout_seconds:.0f}s.\n"
+            f"⏳ Stall detected\n"
+            f"No output for {settings.heartbeat_timeout_seconds:.0f}s.\n"
             f"The process may be hanging."
         )
 
@@ -323,9 +330,14 @@ class ClaudeGhost:
                 f"{pct:.0f}% used[/bold yellow]"
             )
             self._notify(
-                f"⚠️ Budget at {pct:.0f}%\n"
-                f"Used: ${cost:.2f} / ${budget:.2f}\n"
-                f"The session will stop when the budget is reached."
+                f"╔══════════════════════════╗\n"
+                f"║  ⚠️  BUDGET WARNING      ║\n"
+                f"╚══════════════════════════╝\n"
+                f"\n"
+                f"📊 Usage: {pct:.0f}%\n"
+                f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
+                f"\n"
+                f"Session will stop when budget is reached."
             )
 
         # Budget exceeded — stop and ask user
@@ -341,12 +353,18 @@ class ClaudeGhost:
             self._bridge.kill()
 
             self._request_approval(
-                f"⛔ BUDGET REACHED — execution stopped\n"
-                f"Used: ${cost:.2f} / ${budget:.2f}\n\n"
-                f"Options:\n"
-                f"[T <amount>] Top-up budget "
-                f"(e.g. T 5 adds $5.00)\n"
-                f"[S] Stop — end the session"
+                f"╔══════════════════════════╗\n"
+                f"║  ⛔ BUDGET REACHED       ║\n"
+                f"╚══════════════════════════╝\n"
+                f"\n"
+                f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
+                f"   Execution stopped.\n"
+                f"\n"
+                f"┌─────────────────────────┐\n"
+                f"│  Reply with:            │\n"
+                f"│  T <amount> 💵 Top-up   │\n"
+                f"│  S  🛑 Stop session     │\n"
+                f"└─────────────────────────┘"
             )
 
     def _handle_budget_reply(self, reply: str) -> bool:
@@ -366,7 +384,7 @@ class ClaudeGhost:
                 "[red]User chose to stop after budget limit.[/red]"
             )
             ghost_status.state = "EXITED"
-            self._notify("Session ended by user (budget limit).")
+            self._notify("🛑 Session ended by user (budget limit).")
             self._shutdown.set()
             return True
 
@@ -384,9 +402,13 @@ class ClaudeGhost:
 
             if topup <= 0:
                 self._notify(
-                    "Invalid amount. Reply with:\n"
-                    "[T <amount>] e.g. T 5\n"
-                    "[S] Stop"
+                    "❓ Invalid amount.\n"
+                    "\n"
+                    "┌─────────────────────────┐\n"
+                    "│  Reply with:            │\n"
+                    "│  T <amount> 💵 Top-up   │\n"
+                    "│  S  🛑 Stop session     │\n"
+                    "└─────────────────────────┘"
                 )
                 return True
 
@@ -407,7 +429,7 @@ class ClaudeGhost:
             )
             self._notify(
                 f"✅ Budget updated: ${new_budget:.2f}\n"
-                f"Resuming task..."
+                f"▶️ Resuming task..."
             )
 
             # Restart the Claude process with the new budget
@@ -426,9 +448,13 @@ class ClaudeGhost:
 
         # Unrecognised reply while paused
         self._notify(
-            "Budget is paused. Reply with:\n"
-            "[T <amount>] Top-up (e.g. T 5)\n"
-            "[S] Stop"
+            "⏸️ Budget paused.\n"
+            "\n"
+            "┌─────────────────────────┐\n"
+            "│  Reply with:            │\n"
+            "│  T <amount> 💵 Top-up   │\n"
+            "│  S  🛑 Stop session     │\n"
+            "└─────────────────────────┘"
         )
         return True
 
@@ -442,16 +468,19 @@ class ClaudeGhost:
         changelog_path = self._changelog.save()
 
         summary = (
-            f"ClaudeGhost session ended\n"
-            f"Task: {self.task}\n"
-            f"Duration: {s.elapsed_formatted}\n"
-            f"Cost: ${self._bridge.total_cost:.2f}\n"
-            f"Turns: {turns}\n"
-            f"Queries: {s.queries_total} "
+            f"╔══════════════════════════╗\n"
+            f"║  👻 Session Complete     ║\n"
+            f"╚══════════════════════════╝\n"
+            f"\n"
+            f"📋 Task: {self.task}\n"
+            f"⏱️ Duration: {s.elapsed_formatted}\n"
+            f"💰 Cost: ${self._bridge.total_cost:.2f}\n"
+            f"🔄 Turns: {turns}\n"
+            f"📊 Queries: {s.queries_total} "
             f"(auto:{s.queries_auto_approved} "
             f"user:{s.queries_user_approved} "
             f"blocked:{s.queries_blocked})\n"
-            f"Commands: {s.commands_executed}\n"
+            f"⚡ Commands: {s.commands_executed}\n"
             f"\n{self._changelog.get_summary()}"
         )
 
