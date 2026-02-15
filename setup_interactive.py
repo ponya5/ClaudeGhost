@@ -100,17 +100,19 @@ class ClaudeGhostSetup:
     def configure_telegram(self):
         _print("\n[bold]Step 2:[/bold] Telegram Bot Setup\n")
         _print("  Follow these steps in Telegram:")
-        _print("  1. Open Telegram and search for [bold]@BotFather[/bold]")
-        _print("  2. Send [bold]/newbot[/bold]")
-        _print("  3. Choose a name and username for your bot")
-        _print("  4. Copy the token BotFather gives you\n")
+        _print("  1. Open [bold]Telegram Web[/bold] (not Telegram App)")
+        _print("  2. Search for [bold]@BotFather[/bold]")
+        _print("  3. Send [bold]/newbot[/bold]")
+        _print("  4. Choose a name and username for your bot")
+        _print("  5. Copy the token BotFather gives you\n")
 
         self.config["TELEGRAM_BOT_TOKEN"] = _ask("Paste your bot token")
 
         _print("\n  Now get your Chat ID:")
-        _print("  1. Send any message to your new bot")
-        _print("  2. Open: https://api.telegram.org/bot<TOKEN>/getUpdates")
-        _print("  3. Find your chat id in the response\n")
+        _print("  1. Send your bot a message (in Telegram Web)")
+        _print("  2. Open a new tab with: https://api.telegram.org/bot<TOKEN>/getUpdates")
+        _print("  3. You should get a response - copy the 'id' value")
+        _print("  4. That 'id' value is your Chat ID\n")
 
         self.config["TELEGRAM_CHAT_ID"] = _ask("Your chat ID")
 
