@@ -228,10 +228,14 @@ class ClaudeGhost:
             with self._pending_lock:
                 self._pending_query = None
 
-        elif first_char == "C" or has_pending:
-            context = reply
-            if first_char == "C" and len(reply) > 1:
-                context = reply[1:].strip()
+        elif first_char == "C":
+            context = reply[1:].strip() if len(reply) > 1 else ""
+            if not context:
+                self._notify(
+                    "Please provide context text after C.\n"
+                    "Example: C Please use Python 3.11 syntax"
+                )
+                return
             ghost_status.add_log(
                 f"[cyan]Context injected:[/cyan] {context[:60]}"
             )
