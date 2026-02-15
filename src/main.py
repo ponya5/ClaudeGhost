@@ -216,10 +216,15 @@ class ClaudeGhost:
             ghost_status.state = "RUNNING"
 
         elif first_char == "B":
-            # Block: Send 'n' to reject the action, agent will offer alternative
-            ghost_status.add_log("[red]User BLOCKED - agent will provide alternative.[/red]")
+            # Block: The tool already executed (Claude CLI pre-approved
+            # all tools), but we tell Claude to try a different approach
+            ghost_status.add_log("[red]User BLOCKED - requesting alternative.[/red]")
             ghost_status.stats.record_blocked()
-            self._bridge.send("n")
+            self._bridge.send(
+                "The user rejected the last action. "
+                "Please undo it if possible and try "
+                "a different approach."
+            )
             with self._pending_lock:
                 self._pending_query = None
             ghost_status.state = "RUNNING"
@@ -261,7 +266,7 @@ class ClaudeGhost:
                 "┌─────────────────────────┐\n"
                 "│  Reply with:            │\n"
                 "│  A  ✅ Approve          │\n"
-                "│  B  🚫 Block            │\n"
+                "│  B  🚫 Block & Redo    │\n"
                 "│  C <text> 💬 Context    │\n"
                 "│  D  💀 Detonate (kill)  │\n"
                 "└─────────────────────────┘"

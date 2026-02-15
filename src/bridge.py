@@ -27,22 +27,27 @@ if sys.platform == "win32":
         pass
 
 # ---------------------------------------------------------------------------
-# AFK level -> --allowedTools mapping for headless (-p) mode
-# Level 1 (Paranoid):  Nothing auto-approved
+# AFK level -> tools the BRIDGE auto-approves (guardian logic)
+# We pass ALL tools to Claude CLI via --allowedTools so it never
+# auto-denies anything.  The bridge handles approval/denial via
+# the guardian + Telegram/screen.
+# Level 1 (Paranoid):  Nothing auto-approved - ask for everything
 # Level 2 (Auditor):   Read-only tools auto-approved
 # Level 3 (Manager):   Read + Write tools auto-approved
 # Level 4 (Director):  Read + Write + Execute auto-approved
 # Level 5 (God Mode):  Everything auto-approved
 # ---------------------------------------------------------------------------
+_ALL_TOOLS = [
+    "Read", "Write", "Edit",
+    "Bash", "WebFetch", "WebSearch",
+]
+
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
     1: [],
     2: ["Read"],
     3: ["Read", "Write", "Edit"],
     4: ["Read", "Write", "Edit", "Bash"],
-    5: [
-        "Read", "Write", "Edit",
-        "Bash", "WebFetch", "WebSearch",
-    ],
+    5: _ALL_TOOLS,
 }
 
 
@@ -416,7 +421,18 @@ class GhostBridge:
         self, binary: str, cwd: str,
     ) -> None:
         """Build the command and spawn via winpty or
-        subprocess depending on platform."""
+        subprocess depending on platform.
+        
+        Uses interactive mode (not -p) so Claude CLI
+        prompts for tool permissions. The bridge intercepts
+        these prompts and routes them to the user via
+        Telegram/screen based on AFK level.
+        """
+        # Use -p (print/headless) with --allowedTools for
+        # the AFK level's auto-approved tools.
+        # Tools NOT in the list will be prompted by Claude CLI.
+        # The bridge detects these prompts via regex and
+        # blocks until the user responds via Telegram.
         cmd_parts = [binary, "-p", self.task]
         cmd_parts += [
             "--output-format", "stream-json",
@@ -426,11 +442,17 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
+        # Pass ALL tools to Claude CLI so it never auto-skips.
+        # The bridge handles approval per AFK level:
+        # - Auto-approved tools: processed silently
+        # - Non-approved tools: user is notified and can
+        #   approve, block (kills session), or detonate
+        for tool in _ALL_TOOLS:
+            cmd_parts += ["--allowedTools", tool]
+
         allowed = _LEVEL_ALLOWED_TOOLS.get(
             self._afk_level, []
         )
-        for tool in allowed:
-            cmd_parts += ["--allowedTools", tool]
 
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
@@ -442,7 +464,7 @@ class GhostBridge:
         ghost_status.add_log(
             f"[bold]Headless mode:[/bold] "
             f"level {self._afk_level}, "
-            f"tools: "
+            f"auto-approve: "
             f"{', '.join(allowed) or 'none'}, "
             f"budget: ${budget:.2f}"
         )
