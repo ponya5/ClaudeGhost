@@ -20,6 +20,10 @@ class ChangeLog:
         self.files_modified: List[str] = []
         self.start_time = datetime.now()
         self.end_time: Optional[datetime] = None
+        # Session data populated before save
+        self.activity_log: List[str] = []
+        self.event_log: List[str] = []
+        self.stats_data: Optional[dict] = None
 
     def add_command(self, command: str) -> None:
         """Record a command that was executed."""
@@ -70,7 +74,7 @@ class ChangeLog:
             return ""
 
     def _build_changelog_content(self, duration: str) -> str:
-        """Build the formatted changelog content."""
+        """Build the formatted changelog content with full session data."""
         lines = []
         lines.append("=" * 70)
         lines.append("ClaudeGhost Session Changelog")
@@ -86,13 +90,51 @@ class ChangeLog:
         lines.append(f"Duration: {duration}")
         lines.append("")
 
+        # Session Statistics
+        if self.stats_data:
+            sd = self.stats_data
+            lines.append("-" * 70)
+            lines.append("Session Statistics")
+            lines.append("-" * 70)
+            lines.append(f"  Model:          {sd.get('model', 'N/A')}")
+            lines.append(f"  AFK Level:      {sd.get('afk_level', 'N/A')} ({sd.get('level_name', '')})")
+            lines.append(f"  Budget:         ${sd.get('budget_used', 0):.2f} / ${sd.get('budget_max', 0):.2f}")
+            lines.append(f"  Elapsed:        {sd.get('elapsed', duration)}")
+            lines.append(f"  Turns:          {sd.get('turns', 0)}")
+            lines.append(f"  Queries Total:  {sd.get('queries_total', 0)}")
+            lines.append(f"    Auto-approved:  {sd.get('queries_auto', 0)}")
+            lines.append(f"    User-approved:  {sd.get('queries_user', 0)}")
+            lines.append(f"    Blocked:        {sd.get('queries_blocked', 0)}")
+            lines.append(f"  Commands:       {sd.get('commands', 0)}")
+            if sd.get('telegram_enabled'):
+                lines.append(f"  Telegram I/O:   {sd.get('telegram_sent', 0)} / {sd.get('telegram_received', 0)}")
+            lines.append("")
+
+        # Activity Log
+        if self.activity_log:
+            lines.append("-" * 70)
+            lines.append(f"Activity Log ({len(self.activity_log)} entries)")
+            lines.append("-" * 70)
+            for entry in self.activity_log:
+                lines.append(f"  {entry}")
+            lines.append("")
+
+        # Claude Code Events
+        if self.event_log:
+            lines.append("-" * 70)
+            lines.append(f"Claude Code Events ({len(self.event_log)} entries)")
+            lines.append("-" * 70)
+            for entry in self.event_log:
+                lines.append(f"  {entry}")
+            lines.append("")
+
         # Files Modified
         lines.append("-" * 70)
         lines.append(f"Files Modified ({len(self.files_modified)})")
         lines.append("-" * 70)
         if self.files_modified:
             for filepath in self.files_modified:
-                lines.append(f"  • {filepath}")
+                lines.append(f"  * {filepath}")
         else:
             lines.append("  (No files modified)")
         lines.append("")
@@ -114,7 +156,7 @@ class ChangeLog:
             lines.append("Changes Summary")
             lines.append("-" * 70)
             for change in self.changes:
-                lines.append(f"  • {change}")
+                lines.append(f"  * {change}")
             lines.append("")
 
         lines.append("=" * 70)

@@ -57,6 +57,10 @@ class ClaudeGhost:
         self._context_state: Optional[str] = None
         self._pending_context: Optional[str] = None
 
+        # Store the original task separately so context flow
+        # always builds from the clean original, not accumulated text
+        self._original_task = config.task
+
         ghost_status.reset()
         ghost_status.current_task = config.task
         ghost_status.afk_level = config.afk_level
@@ -83,9 +87,9 @@ class ClaudeGhost:
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
             self._notify(
-                f"╔═══════════════════════════╗\n"
-                f"║  👻 ClaudeGhost Started   ║\n"
-                f"╚═══════════════════════════╝\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"  👻 ClaudeGhost Started\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"\n"
                 f"📋 Task: {self.task}\n"
                 f"🤖 AFK Level: {self.afk_level} ({self.config.level_name})\n"
@@ -328,7 +332,7 @@ class ClaudeGhost:
             first = reply[0].upper() if reply else ""
 
             if first == "Y":
-                # Accept: restart with context
+                # Accept: restart with context applied to ORIGINAL task
                 context = self._pending_context or ""
                 self._context_state = None
                 self._pending_context = None
@@ -340,10 +344,14 @@ class ClaudeGhost:
                 with self._pending_lock:
                     self._pending_query = None
 
+                # Always build from the original task so context
+                # replaces rather than accumulates
                 new_task = (
-                    f"{self.task}\n\n"
-                    f"IMPORTANT additional instruction from user: "
-                    f"{context}"
+                    f"OVERRIDE — the user has updated the task.\n"
+                    f"Original task: {self._original_task}\n\n"
+                    f"USER INSTRUCTION (follow this): {context}\n\n"
+                    f"You MUST follow the user instruction above. "
+                    f"It takes priority over the original task."
                 )
                 self.task = new_task
                 self._notify(
@@ -461,9 +469,9 @@ class ClaudeGhost:
                 f"{pct:.0f}% used[/bold yellow]"
             )
             self._notify(
-                f"╔═══════════════════════════╗\n"
-                f"║  ⚠️  BUDGET WARNING       ║\n"
-                f"╚═══════════════════════════╝\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"  ⚠️  BUDGET WARNING\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"\n"
                 f"📊 Usage: {pct:.0f}%\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
@@ -484,16 +492,16 @@ class ClaudeGhost:
             self._bridge.kill()
 
             self._request_approval(
-                f"╔═══════════════════════════╗\n"
-                f"║  ⛔ BUDGET REACHED        ║\n"
-                f"╚═══════════════════════════╝\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"  ⛔ BUDGET REACHED\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
                 f"   Execution stopped.\n"
                 f"\n"
                 f"Reply:\n"
                 f"  T <amount> - 💵 Top-up\n"
-                f"  S - � Stop session"
+                f"  S - 🛑 Stop session"
             )
 
     def _handle_budget_reply(self, reply: str) -> bool:
@@ -535,7 +543,7 @@ class ClaudeGhost:
                     "\n"
                     "Reply:\n"
                     "  T <amount> - 💵 Top-up\n"
-                    "  S - � Stop session"
+                    "  S - 🛑 Stop session"
                 )
                 return True
 
@@ -579,7 +587,7 @@ class ClaudeGhost:
             "\n"
             "Reply:\n"
             "  T <amount> - 💵 Top-up\n"
-            "  S - � Stop session"
+            "  S - 🛑 Stop session"
         )
         return True
 
@@ -588,16 +596,37 @@ class ClaudeGhost:
         s = ghost_status.stats
         turns = self._bridge.num_turns
 
+        # Populate changelog with full session data before saving
+        self._changelog.activity_log = ghost_status.get_plain_logs()
+        self._changelog.event_log = ghost_status.get_plain_events()
+        self._changelog.stats_data = {
+            "model": ghost_status.model,
+            "afk_level": ghost_status.afk_level,
+            "level_name": ghost_status.level_name,
+            "budget_used": self._bridge.total_cost,
+            "budget_max": self.config.budget_usd,
+            "elapsed": s.elapsed_formatted,
+            "turns": turns,
+            "queries_total": s.queries_total,
+            "queries_auto": s.queries_auto_approved,
+            "queries_user": s.queries_user_approved,
+            "queries_blocked": s.queries_blocked,
+            "commands": s.commands_executed,
+            "telegram_enabled": ghost_status.telegram_enabled,
+            "telegram_sent": s.telegram_sent,
+            "telegram_received": s.telegram_received,
+        }
+
         # Finalize and save changelog
         self._changelog.finalize()
         changelog_path = self._changelog.save()
 
         summary = (
-            f"╔═══════════════════════════╗\n"
-            f"║  👻 Session Complete      ║\n"
-            f"╚═══════════════════════════╝\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"  👻 Session Complete\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"\n"
-            f"📋 Task: {self.task}\n"
+            f"📋 Task: {self._original_task}\n"
             f"⏱️ Duration: {s.elapsed_formatted}\n"
             f"💰 Cost: ${self._bridge.total_cost:.2f}\n"
             f"🔄 Turns: {turns}\n"

@@ -21,10 +21,17 @@ logger.propagate = False
 
 _MARKUP_ESCAPE_RE = re.compile(r"[\[\]]")
 
+_RICH_TAG_RE = re.compile(r"\[/?[a-zA-Z_ ]+\]")
+
 
 def _safe_markup(text: str) -> str:
     """Escape Rich markup brackets in untrusted text."""
     return _MARKUP_ESCAPE_RE.sub(lambda m: "\\" + m.group(), text)
+
+
+def _strip_markup(text: str) -> str:
+    """Remove Rich markup tags from text for plain-text output."""
+    return _RICH_TAG_RE.sub("", text)
 
 
 class SessionStats:
@@ -125,6 +132,16 @@ class GhostStatus:
             self._event_lines.append(f"[dim]{ts}[/dim] {msg}")
             if len(self._event_lines) > 300:
                 self._event_lines = self._event_lines[-300:]
+
+    def get_plain_logs(self) -> list[str]:
+        """Return log lines with Rich markup stripped (for text files)."""
+        with self._lock:
+            return [_strip_markup(ln) for ln in self._log_lines]
+
+    def get_plain_events(self) -> list[str]:
+        """Return event lines with Rich markup stripped (for text files)."""
+        with self._lock:
+            return [_strip_markup(ln) for ln in self._event_lines]
 
     def build_layout(self) -> Layout:
         layout = Layout()
