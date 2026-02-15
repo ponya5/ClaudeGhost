@@ -727,8 +727,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Auto-update before anything else
-    auto_update()
+    # Auto-update before anything else — if updated, restart
+    # the process so the new code is loaded.
+    updated = auto_update()
+    if updated:
+        import os
+        os.execv(sys.executable, [sys.executable] + sys.argv)
     console.print()
 
     # Session loop

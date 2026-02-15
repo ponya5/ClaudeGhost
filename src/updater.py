@@ -157,13 +157,15 @@ def _get_default_branch(cg_dir: Path) -> str:
     return "main"
 
 
-def auto_update() -> None:
+def auto_update() -> bool:
     """Check for updates and apply them automatically with a spinner.
 
     Called at launch — if an update is found the repo is pulled,
     dependencies are installed, and the user sees a progress message
     the whole time.  If anything fails it is silently skipped so the
     normal launch flow is never blocked.
+
+    Returns True if an update was applied (caller should restart).
     """
     from rich.console import Console
 
@@ -173,7 +175,7 @@ def auto_update() -> None:
         cg_dir = Path(__file__).parent.parent
         git_dir = cg_dir / ".git"
         if not git_dir.exists():
-            return
+            return False
 
         # --- Phase 1: fetch + compare ---
         console.print("[dim]Checking for updates...[/dim]")
@@ -190,7 +192,7 @@ def auto_update() -> None:
                 "[dim]✓ Skipped update check "
                 "(offline or no remote)[/dim]"
             )
-            return
+            return False
 
         branch = _get_default_branch(cg_dir)
 
@@ -210,14 +212,14 @@ def auto_update() -> None:
         )
 
         if local.returncode != 0 or remote.returncode != 0:
-            return
+            return False
 
         if local.stdout.strip() == remote.stdout.strip():
             console.print(
                 f"[green]✓[/green] ClaudeGhost "
                 f"v{CURRENT_VERSION} — up to date"
             )
-            return
+            return False
 
         # How far behind?
         behind = subprocess.run(
@@ -258,7 +260,7 @@ def auto_update() -> None:
             logger.debug(
                 "git pull stderr: %s", pull.stderr
             )
-            return
+            return False
 
         console.print("[dim]Installing dependencies...[/dim]")
         subprocess.run(
@@ -276,9 +278,14 @@ def auto_update() -> None:
             f"[green]✓ Updated to latest "
             f"({count} update(s) applied)[/green]"
         )
+        console.print(
+            "[cyan]Restarting ClaudeGhost with latest code...[/cyan]\n"
+        )
+        return True
 
     except Exception as exc:
         logger.debug("Auto-update failed: %s", exc)
+        return False
 
 
 def main() -> None:
