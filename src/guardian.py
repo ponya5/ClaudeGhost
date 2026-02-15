@@ -221,18 +221,16 @@ def _clean_extracted(cmd: str) -> str:
 def format_approval_message(command: str, category: RiskCategory) -> str:
     label, icon = _RISK_LABELS[category]
     return (
-        f"╔══════════════════════════╗\n"
-        f"║   ⚠️  ACTION DETECTED    ║\n"
-        f"╚══════════════════════════╝\n"
+        f"╔═══════════════════════════╗\n"
+        f"║  ⚠️  ACTION DETECTED      ║\n"
+        f"╚═══════════════════════════╝\n"
         f"\n"
         f"🔧 Tool: {command}\n"
         f"🎯 Risk: {icon} {label}\n"
         f"\n"
-        f"┌─────────────────────────┐\n"
-        f"│  Reply with:            │\n"
-        f"│  A  ✅ Approve          │\n"
-        f"│  B  🚫 Block & Redo    │\n"
-        f"│  C <text> 💬 Context    │\n"
-        f"│  D  💀 Detonate (kill)  │\n"
-        f"└─────────────────────────┘"
+        f"Reply:\n"
+        f"  A - ✅ Approve\n"
+        f"  B - 🚫 Block & Redo\n"
+        f"  C - 💬 Add Context\n"
+        f"  D - 💀 Detonate (kill)"
     )

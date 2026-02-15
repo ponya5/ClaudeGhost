@@ -53,6 +53,9 @@ class ClaudeGhost:
         self._budget_paused = False
         self._shutdown = threading.Event()
         self._changelog = ChangeLog(config.task, self.session_id)
+        # Context flow state: None, "awaiting_text", "awaiting_confirm"
+        self._context_state: Optional[str] = None
+        self._pending_context: Optional[str] = None
 
         ghost_status.reset()
         ghost_status.current_task = config.task
@@ -80,13 +83,13 @@ class ClaudeGhost:
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
             self._notify(
-                f"╔══════════════════════════╗\n"
-                f"║  👻 ClaudeGhost Started  ║\n"
-                f"╚══════════════════════════╝\n"
+                f"╔═══════════════════════════╗\n"
+                f"║  👻 ClaudeGhost Started   ║\n"
+                f"╚═══════════════════════════╝\n"
                 f"\n"
                 f"📋 Task: {self.task}\n"
                 f"🤖 AFK Level: {self.afk_level} ({self.config.level_name})\n"
-                f"💰 Budget: ${self.config.budget_usd:.2f}"
+                f"💰 Budget (Limit/Quota): ${self.config.budget_usd:.2f}"
             )
         elif self._screen:
             self._screen.set_callback(self._handle_reply)
@@ -198,6 +201,10 @@ class ClaudeGhost:
         if self._handle_budget_reply(body):
             return
 
+        # Context flow state machine
+        if self._handle_context_reply(body):
+            return
+
         reply = body.strip()
         first_char = reply[0].upper() if reply else ""
 
@@ -205,7 +212,7 @@ class ClaudeGhost:
             has_pending = self._pending_query is not None
 
         if first_char == "A":
-            # Approve: Send 'y' to approve the agent's proposed action
+            # Approve: continue with the agent's proposed action
             ghost_status.add_log("[green]User APPROVED.[/green]")
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
@@ -216,36 +223,53 @@ class ClaudeGhost:
             ghost_status.state = "RUNNING"
 
         elif first_char == "B":
-            # Block: The tool already executed (Claude CLI pre-approved
-            # all tools), but we tell Claude to try a different approach
+            # Block: kill and restart, asking for alternative
             ghost_status.add_log("[red]User BLOCKED - requesting alternative.[/red]")
             ghost_status.stats.record_blocked()
-            self._bridge.send(
-                "The user rejected the last action. "
-                "Please undo it if possible and try "
-                "a different approach."
-            )
+            self._bridge.kill()
             with self._pending_lock:
                 self._pending_query = None
+
+            new_task = (
+                f"{self.task}\n\n"
+                f"IMPORTANT: The user blocked the last action. "
+                f"Please try a different approach."
+            )
+            self._bridge = GhostBridge(
+                task=new_task,
+                on_query=self._handle_query,
+                on_idle=self._handle_idle,
+                on_stall=self._handle_stall,
+                on_event=self._handle_event,
+                afk_level=self.afk_level,
+                model=self.config.model,
+            )
+            self._bridge.start()
             ghost_status.state = "RUNNING"
 
         elif first_char == "C":
-            # Context: User provides additional instructions/context
-            context = reply[1:].strip() if len(reply) > 1 else ""
-            if not context:
+            # Context: start multi-step context flow
+            context_inline = reply[1:].strip() if len(reply) > 1 else ""
+            if context_inline:
+                # User provided context inline: C <text>
+                # Go straight to confirmation
+                self._pending_context = context_inline
+                self._context_state = "awaiting_confirm"
                 self._notify(
-                    "💬 Please provide context text after C.\n"
-                    "Example: C Please use Python 3.11 syntax"
+                    f"📝 Your context change:\n"
+                    f"   {context_inline}\n"
+                    f"\n"
+                    f"Reply:\n"
+                    f"  Y - ✅ Accept & Apply\n"
+                    f"  N - ❌ Cancel\n"
+                    f"  M - ✏️ Modify"
                 )
-                return
-            ghost_status.add_log(
-                f"[cyan]Context injected:[/cyan] {context[:60]}"
-            )
-            # Send the context as user input to guide the agent
-            self._bridge.send(context)
-            with self._pending_lock:
-                self._pending_query = None
-            ghost_status.state = "RUNNING"
+            else:
+                # User just pressed C, ask for context text
+                self._context_state = "awaiting_text"
+                self._notify(
+                    "💬 Type your context / instruction below:"
+                )
 
         elif first_char == "D":
             # Detonate: Kill the session immediately
@@ -263,14 +287,116 @@ class ClaudeGhost:
             self._notify(
                 "❓ Unknown reply.\n"
                 "\n"
-                "┌─────────────────────────┐\n"
-                "│  Reply with:            │\n"
-                "│  A  ✅ Approve          │\n"
-                "│  B  🚫 Block & Redo    │\n"
-                "│  C <text> 💬 Context    │\n"
-                "│  D  💀 Detonate (kill)  │\n"
-                "└─────────────────────────┘"
+                "Reply:\n"
+                "  A - ✅ Approve\n"
+                "  B - 🚫 Block & Redo\n"
+                "  C - 💬 Add Context\n"
+                "  D - 💀 Detonate (kill)"
             )
+
+    def _handle_context_reply(self, body: str) -> bool:
+        """Handle replies during the multi-step context flow.
+
+        Returns True if the reply was consumed, False otherwise.
+        """
+        if self._context_state is None:
+            return False
+
+        reply = body.strip()
+
+        if self._context_state == "awaiting_text":
+            # User is typing their context text
+            if not reply:
+                self._notify(
+                    "💬 Type your context / instruction below:"
+                )
+                return True
+            self._pending_context = reply
+            self._context_state = "awaiting_confirm"
+            self._notify(
+                f"📝 Your context change:\n"
+                f"   {reply}\n"
+                f"\n"
+                f"Reply:\n"
+                f"  Y - ✅ Accept & Apply\n"
+                f"  N - ❌ Cancel\n"
+                f"  M - ✏️ Modify"
+            )
+            return True
+
+        if self._context_state == "awaiting_confirm":
+            first = reply[0].upper() if reply else ""
+
+            if first == "Y":
+                # Accept: restart with context
+                context = self._pending_context or ""
+                self._context_state = None
+                self._pending_context = None
+
+                ghost_status.add_log(
+                    f"[cyan]Context accepted:[/cyan] {context[:60]}"
+                )
+                self._bridge.kill()
+                with self._pending_lock:
+                    self._pending_query = None
+
+                new_task = (
+                    f"{self.task}\n\n"
+                    f"IMPORTANT additional instruction from user: "
+                    f"{context}"
+                )
+                self.task = new_task
+                self._notify(
+                    f"🔄 Restarting with your context:\n"
+                    f"   {context[:200]}"
+                )
+                self._bridge = GhostBridge(
+                    task=new_task,
+                    on_query=self._handle_query,
+                    on_idle=self._handle_idle,
+                    on_stall=self._handle_stall,
+                    on_event=self._handle_event,
+                    afk_level=self.afk_level,
+                    model=self.config.model,
+                )
+                self._bridge.start()
+                ghost_status.state = "RUNNING"
+                return True
+
+            elif first == "N":
+                # Cancel: go back to waiting for action reply
+                self._context_state = None
+                self._pending_context = None
+                self._notify(
+                    "❌ Context cancelled. Still waiting for your reply.\n"
+                    "\n"
+                    "Reply:\n"
+                    "  A - ✅ Approve\n"
+                    "  B - 🚫 Block & Redo\n"
+                    "  C - 💬 Add Context\n"
+                    "  D - 💀 Detonate (kill)"
+                )
+                return True
+
+            elif first == "M":
+                # Modify: go back to text input
+                self._context_state = "awaiting_text"
+                self._pending_context = None
+                self._notify(
+                    "✏️ Type your updated context / instruction:"
+                )
+                return True
+
+            else:
+                self._notify(
+                    "❓ Reply with:\n"
+                    "  Y - Accept & Apply\n"
+                    "  N - Cancel\n"
+                    "  M - Modify"
+                )
+                return True
+
+        return False
 
     # -- Other callbacks -----------------------------------------------------
 
@@ -335,9 +461,9 @@ class ClaudeGhost:
                 f"{pct:.0f}% used[/bold yellow]"
             )
             self._notify(
-                f"╔══════════════════════════╗\n"
-                f"║  ⚠️  BUDGET WARNING      ║\n"
-                f"╚══════════════════════════╝\n"
+                f"╔═══════════════════════════╗\n"
+                f"║  ⚠️  BUDGET WARNING       ║\n"
+                f"╚═══════════════════════════╝\n"
                 f"\n"
                 f"📊 Usage: {pct:.0f}%\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
@@ -358,18 +484,16 @@ class ClaudeGhost:
             self._bridge.kill()
 
             self._request_approval(
-                f"╔══════════════════════════╗\n"
-                f"║  ⛔ BUDGET REACHED       ║\n"
-                f"╚══════════════════════════╝\n"
+                f"╔═══════════════════════════╗\n"
+                f"║  ⛔ BUDGET REACHED        ║\n"
+                f"╚═══════════════════════════╝\n"
                 f"\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
                 f"   Execution stopped.\n"
                 f"\n"
-                f"┌─────────────────────────┐\n"
-                f"│  Reply with:            │\n"
-                f"│  T <amount> 💵 Top-up   │\n"
-                f"│  S  🛑 Stop session     │\n"
-                f"└─────────────────────────┘"
+                f"Reply:\n"
+                f"  T <amount> - 💵 Top-up\n"
+                f"  S - � Stop session"
             )
 
     def _handle_budget_reply(self, reply: str) -> bool:
@@ -409,11 +533,9 @@ class ClaudeGhost:
                 self._notify(
                     "❓ Invalid amount.\n"
                     "\n"
-                    "┌─────────────────────────┐\n"
-                    "│  Reply with:            │\n"
-                    "│  T <amount> 💵 Top-up   │\n"
-                    "│  S  🛑 Stop session     │\n"
-                    "└─────────────────────────┘"
+                    "Reply:\n"
+                    "  T <amount> - 💵 Top-up\n"
+                    "  S - � Stop session"
                 )
                 return True
 
@@ -455,11 +577,9 @@ class ClaudeGhost:
         self._notify(
             "⏸️ Budget paused.\n"
             "\n"
-            "┌─────────────────────────┐\n"
-            "│  Reply with:            │\n"
-            "│  T <amount> 💵 Top-up   │\n"
-            "│  S  🛑 Stop session     │\n"
-            "└─────────────────────────┘"
+            "Reply:\n"
+            "  T <amount> - 💵 Top-up\n"
+            "  S - � Stop session"
         )
         return True
 
@@ -473,9 +593,9 @@ class ClaudeGhost:
         changelog_path = self._changelog.save()
 
         summary = (
-            f"╔══════════════════════════╗\n"
-            f"║  👻 Session Complete     ║\n"
-            f"╚══════════════════════════╝\n"
+            f"╔═══════════════════════════╗\n"
+            f"║  👻 Session Complete      ║\n"
+            f"╚═══════════════════════════╝\n"
             f"\n"
             f"📋 Task: {self.task}\n"
             f"⏱️ Duration: {s.elapsed_formatted}\n"
