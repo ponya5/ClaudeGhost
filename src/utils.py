@@ -146,17 +146,17 @@ class GhostStatus:
     def build_layout(self) -> Layout:
         layout = Layout()
 
-        # Calculate panel heights from terminal size
+        # Use ratio-based sizing so Rich auto-fits within
+        # the terminal height (fixed sizes can overflow)
         term_h = console.height or 24
-        half_h = max(6, term_h // 2)
 
         layout.split_row(
             Layout(name="left", ratio=2),
             Layout(name="right", size=30),
         )
         layout["left"].split_column(
-            Layout(name="logs", size=half_h),
-            Layout(name="events", size=half_h),
+            Layout(name="logs", ratio=1),
+            Layout(name="events", ratio=1),
         )
         layout["right"].split_column(
             Layout(name="status"),
@@ -164,7 +164,9 @@ class GhostStatus:
         )
 
         # How many log lines fit in each panel
+        # Each panel gets roughly half the terminal height
         panel_overhead = 3
+        half_h = max(6, term_h // 2)
         max_lines = max(3, half_h - panel_overhead)
 
         # Activity Log panel
