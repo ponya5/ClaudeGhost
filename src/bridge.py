@@ -27,10 +27,11 @@ if sys.platform == "win32":
         pass
 
 # ---------------------------------------------------------------------------
-# AFK level -> tools the BRIDGE auto-approves (guardian logic)
-# We pass ALL tools to Claude CLI via --allowedTools so it never
-# auto-denies anything.  The bridge handles approval/denial via
-# the guardian + Telegram/screen.
+# AFK level -> tools the BRIDGE auto-approves
+# All tools are passed to Claude CLI via --allowedTools so it
+# never auto-denies anything. The bridge blocks the read loop
+# for non-approved tools, which back-pressures Claude CLI's
+# stdout and effectively pauses it until the user responds.
 # Level 1 (Paranoid):  Nothing auto-approved - ask for everything
 # Level 2 (Auditor):   Read-only tools auto-approved
 # Level 3 (Manager):   Read + Write tools auto-approved
@@ -334,7 +335,6 @@ class GhostBridge:
         self._num_turns: int = 0
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
-        self._pending_tool_event: Optional[StreamEvent] = None
         self._approval_event = threading.Event()
         self._approval_event.set()  # Start unblocked
 
@@ -422,37 +422,31 @@ class GhostBridge:
     ) -> None:
         """Build the command and spawn via winpty or
         subprocess depending on platform.
-        
-        Uses interactive mode (not -p) so Claude CLI
-        prompts for tool permissions. The bridge intercepts
-        these prompts and routes them to the user via
-        Telegram/screen based on AFK level.
+
+        All tools are passed to --allowedTools so Claude
+        CLI never auto-skips a tool. The bridge handles
+        approval per AFK level by blocking the read loop
+        (which back-pressures Claude CLI's stdout) until
+        the user responds via Telegram/screen.
         """
-        # Use -p (print/headless) with --allowedTools for
-        # the AFK level's auto-approved tools.
-        # Tools NOT in the list will be prompted by Claude CLI.
-        # The bridge detects these prompts via regex and
-        # blocks until the user responds via Telegram.
+        allowed = _LEVEL_ALLOWED_TOOLS.get(
+            self._afk_level, []
+        )
+
         cmd_parts = [binary, "-p", self.task]
         cmd_parts += [
             "--output-format", "stream-json",
             "--verbose",
         ]
-
         if self._model:
             cmd_parts += ["--model", self._model]
 
-        # Pass ALL tools to Claude CLI so it never auto-skips.
-        # The bridge handles approval per AFK level:
-        # - Auto-approved tools: processed silently
-        # - Non-approved tools: user is notified and can
-        #   approve, block (kills session), or detonate
+        # Pass ALL tools so Claude CLI never auto-denies.
+        # The bridge blocks the read loop for non-approved
+        # tools, back-pressuring Claude CLI until the user
+        # responds.
         for tool in _ALL_TOOLS:
             cmd_parts += ["--allowedTools", tool]
-
-        allowed = _LEVEL_ALLOWED_TOOLS.get(
-            self._afk_level, []
-        )
 
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
@@ -591,7 +585,36 @@ class GhostBridge:
                                 for a in allowed
                             )
                             if not tool_allowed:
-                                self._pending_tool_event = se
+                                # Block IMMEDIATELY before
+                                # reading more output.
+                                # This back-pressures Claude
+                                # CLI's stdout buffer.
+                                tool = se.tool_name
+                                inp = (se.tool_input or "")
+                                desc = (
+                                    f"{tool}: {inp}"
+                                    if inp else tool
+                                )
+                                self._state = CliState.QUERY
+                                self._query_fired_for = (
+                                    f"tool:{desc}"
+                                )
+                                ghost_status.state = "QUERY"
+                                logger.info(
+                                    "State -> QUERY "
+                                    "(tool: %s) — blocking",
+                                    tool,
+                                )
+                                self._approval_event.clear()
+                                self._on_query(
+                                    "Do you want to run "
+                                    "this tool?\n"
+                                    f"  {desc}"
+                                )
+                                # Block until user responds
+                                self._approval_event.wait()
+                                if not self._running:
+                                    break
                         if (se.num_turns
                                 and se.num_turns
                                 > self._num_turns):
@@ -655,33 +678,10 @@ class GhostBridge:
     def _detect_state(self) -> None:
         tail = self._display_buffer[-3000:]
 
-        # Check for tool-use events that need permission
-        # (detected from stream-json, not regex)
-        pending = self._pending_tool_event
-        if pending and pending.tool_name:
-            self._pending_tool_event = None
-            # Build a human-readable query description
-            tool = pending.tool_name
-            inp = pending.tool_input or ""
-            desc = f"{tool}: {inp}" if inp else tool
-            dedup_key = f"tool:{desc}"
-            if (
-                self._state != CliState.QUERY
-                or self._query_fired_for != dedup_key
-            ):
-                self._state = CliState.QUERY
-                self._query_fired_for = dedup_key
-                ghost_status.state = "QUERY"
-                logger.info("State -> QUERY (tool: %s)", tool)
-                # Block the read loop until user responds
-                self._approval_event.clear()
-                self._on_query(
-                    f"Do you want to run this tool?\n"
-                    f"  {desc}"
-                )
-                # Wait for user response (send() will unblock)
-                self._approval_event.wait()
-            return
+        # Tool-based queries are now handled directly in
+        # _read_loop (blocking immediately on detection).
+        # This method only handles text-based prompts from
+        # Claude CLI (e.g. y/n permission prompts).
 
         if (
             _QUERY_RE.search(tail)
