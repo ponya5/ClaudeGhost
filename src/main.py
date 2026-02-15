@@ -131,7 +131,7 @@ class ClaudeGhost:
             ghost_status.build_layout(),
             console=console,
             refresh_per_second=2,
-            transient=False,
+            transient=True,
         ) as live:
             while not self._shutdown.is_set():
                 # Keep looping while budget-paused or restarting
@@ -665,8 +665,9 @@ class ClaudeGhost:
         ghost_status.add_log(
             "[bold green]Session complete.[/bold green]"
         )
-        console.print()
-        console.print("[bold green]Session Complete[/bold green]")
+        # Print separator + summary below the Live dashboard
+        console.print("\n")
+        console.rule("[bold green]Session Complete[/bold green]")
         console.print(f"  Duration: {s.elapsed_formatted}")
         console.print(
             f"  Cost: ${self._bridge.total_cost:.2f}"
