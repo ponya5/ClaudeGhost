@@ -56,6 +56,8 @@ class ClaudeGhost:
         # Context flow state: None, "awaiting_text", "awaiting_confirm"
         self._context_state: Optional[str] = None
         self._pending_context: Optional[str] = None
+        # Flag to prevent _run_loop from exiting during bridge restart
+        self._restarting = False
 
         # Store the original task separately so context flow
         # always builds from the clean original, not accumulated text
@@ -132,11 +134,13 @@ class ClaudeGhost:
             transient=False,
         ) as live:
             while not self._shutdown.is_set():
-                # Keep looping while budget-paused (waiting for
-                # user to top-up or stop) even if bridge exited
+                # Keep looping while budget-paused or restarting
+                # (waiting for user to top-up/stop or bridge
+                # being replaced) even if bridge exited
                 if (
                     self._bridge.state == CliState.EXITED
                     and not self._budget_paused
+                    and not self._restarting
                 ):
                     break
                 if self._screen and self._screen.check_pending():
@@ -229,7 +233,9 @@ class ClaudeGhost:
         elif first_char == "B":
             # Block: kill and restart, asking for alternative
             ghost_status.add_log("[red]User BLOCKED - requesting alternative.[/red]")
+            ghost_status.add_event("[bold red]🚫 User blocked action — restarting[/bold red]")
             ghost_status.stats.record_blocked()
+            self._restarting = True
             self._bridge.kill()
             with self._pending_lock:
                 self._pending_query = None
@@ -249,6 +255,7 @@ class ClaudeGhost:
                 model=self.config.model,
             )
             self._bridge.start()
+            self._restarting = False
             ghost_status.state = "RUNNING"
 
         elif first_char == "C":
@@ -340,17 +347,21 @@ class ClaudeGhost:
                 ghost_status.add_log(
                     f"[cyan]Context accepted:[/cyan] {context[:60]}"
                 )
+                ghost_status.add_event(
+                    f"[bold cyan]🔄 User context applied:[/bold cyan] {context[:100]}"
+                )
+                self._restarting = True
                 self._bridge.kill()
                 with self._pending_lock:
                     self._pending_query = None
 
-                # Always build from the original task so context
-                # replaces rather than accumulates
+                # Build a single-line task that works with cmd.exe
+                # (newlines in -p args break Windows command parsing)
                 new_task = (
-                    f"OVERRIDE — the user has updated the task.\n"
-                    f"Original task: {self._original_task}\n\n"
-                    f"USER INSTRUCTION (follow this): {context}\n\n"
-                    f"You MUST follow the user instruction above. "
+                    f"OVERRIDE: The user changed the instructions. "
+                    f"Original task was: {self._original_task} --- "
+                    f"NEW USER INSTRUCTION: {context} --- "
+                    f"You MUST follow the NEW USER INSTRUCTION. "
                     f"It takes priority over the original task."
                 )
                 self.task = new_task
@@ -368,6 +379,7 @@ class ClaudeGhost:
                     model=self.config.model,
                 )
                 self._bridge.start()
+                self._restarting = False
                 ghost_status.state = "RUNNING"
                 return True
 
@@ -568,6 +580,7 @@ class ClaudeGhost:
             )
 
             # Restart the Claude process with the new budget
+            self._restarting = True
             self._bridge = GhostBridge(
                 task=self.task,
                 on_query=self._handle_query,
@@ -578,6 +591,7 @@ class ClaudeGhost:
                 model=self.config.model,
             )
             self._bridge.start()
+            self._restarting = False
             ghost_status.state = "RUNNING"
             return True
 
