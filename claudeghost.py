@@ -29,11 +29,14 @@ from src.utils import logger
 
 def main():
     """Main entry point for ClaudeGhost."""
+    import os
+
     # Auto-update before anything else — if updated,
     # reload modules and call main() again in the SAME
     # process so the .bat / shell keeps waiting on us
     # and the cursor stays where it should.
-    if "--skip-update" not in sys.argv:
+    skip = os.environ.pop("_CLAUDEGHOST_SKIP_UPDATE", "")
+    if not skip:
         updated = auto_update()
         if updated:
             sys.stdout.flush()
@@ -46,17 +49,13 @@ def main():
             ]
             for k in mods_to_drop:
                 del sys.modules[k]
-            # Prevent infinite update loop on re-entry
-            sys.argv.append("--skip-update")
-            # Re-import the updated main and call it
+            # Re-import the updated main and call it.
+            # We set an env var (not sys.argv) to skip
+            # the update check so argparse isn't confused.
+            os.environ["_CLAUDEGHOST_SKIP_UPDATE"] = "1"
             from src.main import main as _main
             _main()
             return
-
-    # Remove the skip-update flag so it doesn't
-    # interfere with argparse
-    if "--skip-update" in sys.argv:
-        sys.argv.remove("--skip-update")
 
     parser = argparse.ArgumentParser(
         description="ClaudeGhost - Headless Supervisor for Claude Code CLI",

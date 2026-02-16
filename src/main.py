@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -1038,7 +1039,8 @@ def main() -> None:
 
     # Auto-update (skipped if already handled by
     # claudeghost.py or a previous re-exec).
-    if "--skip-update" not in sys.argv:
+    skip = os.environ.pop("_CLAUDEGHOST_SKIP_UPDATE", "")
+    if not skip:
         updated = auto_update()
         if updated:
             sys.stdout.flush()
@@ -1049,14 +1051,10 @@ def main() -> None:
             ]
             for k in mods_to_drop:
                 del sys.modules[k]
-            sys.argv.append("--skip-update")
+            os.environ["_CLAUDEGHOST_SKIP_UPDATE"] = "1"
             from src.main import main as _main
             _main()
             return
-
-    # Clean up the flag so argparse doesn't choke
-    if "--skip-update" in sys.argv:
-        sys.argv.remove("--skip-update")
     console.print()
 
     while True:
