@@ -244,23 +244,42 @@ def auto_update() -> bool:
             f"({count} update(s))...[/yellow]"
         )
 
-        pull = subprocess.run(
-            ["git", "pull", "origin", branch],
+        # Use reset --hard instead of pull to avoid
+        # conflicts with local changes.  User config
+        # (.env, session_logs/) is gitignored and safe.
+        reset = subprocess.run(
+            [
+                "git", "reset", "--hard",
+                f"origin/{branch}",
+            ],
             cwd=cg_dir,
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
         )
-        if pull.returncode != 0:
-            console.print(
-                "[red]✗ Update failed (git pull error). "
-                "Try: git pull origin main[/red]"
+        if reset.returncode != 0:
+            # Fallback: try a normal pull
+            pull = subprocess.run(
+                ["git", "pull", "origin", branch],
+                cwd=cg_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
             )
-            logger.debug(
-                "git pull stderr: %s", pull.stderr
-            )
-            return False
+            if pull.returncode != 0:
+                console.print(
+                    "[red]✗ Update failed "
+                    "(git pull error). "
+                    "Try: git pull origin "
+                    "main[/red]"
+                )
+                logger.debug(
+                    "git pull stderr: %s",
+                    pull.stderr,
+                )
+                return False
 
         console.print("[dim]Installing dependencies...[/dim]")
         subprocess.run(
