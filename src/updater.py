@@ -384,6 +384,21 @@ def auto_update() -> bool:
         console.print(
             "[cyan]Restarting ClaudeGhost with latest code...[/cyan]\n"
         )
+        # Reset terminal state before the caller restarts
+        # the process.  Rich may have left ANSI modes or
+        # cursor positioning that would corrupt the new
+        # process's terminal.
+        console.file.flush()
+        if hasattr(console.file, "fileno"):
+            try:
+                import os as _os
+                if _os.name == "nt":
+                    _os.system("")  # re-enable VT on Win
+                else:
+                    console.file.write("\033[0m\033[?25h")
+                    console.file.flush()
+            except Exception:
+                pass
         return True
 
     except Exception as exc:

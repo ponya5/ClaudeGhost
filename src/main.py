@@ -1000,19 +1000,28 @@ def main() -> None:
         "--model", "-m", type=str, default=None,
         help="Claude model",
     )
+    parser.add_argument(
+        "--skip-update", action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
-    updated = auto_update()
-    if updated:
-        # Re-launch with the new code.  On Windows os.execv
-        # spawns a child instead of replacing the process,
-        # so we use subprocess + sys.exit to get a clean
-        # handoff.
-        import subprocess as _sp
-        ret = _sp.call(
-            [sys.executable] + sys.argv,
-        )
-        sys.exit(ret)
+    if not args.skip_update:
+        updated = auto_update()
+        if updated:
+            # Re-launch with the new code.  On Windows
+            # os.execv spawns a child instead of replacing
+            # the process, so we use subprocess + sys.exit
+            # for a clean handoff.  Pass --skip-update so
+            # the child doesn't re-check.
+            import subprocess as _sp
+            sys.stdout.flush()
+            sys.stderr.flush()
+            ret = _sp.call(
+                [sys.executable] + sys.argv
+                + ["--skip-update"],
+            )
+            sys.exit(ret)
     console.print()
 
     while True:

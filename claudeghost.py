@@ -29,12 +29,27 @@ from src.utils import logger
 
 def main():
     """Main entry point for ClaudeGhost."""
+    # Check for --skip-update (used after auto-restart)
+    skip_update = "--skip-update" in sys.argv
+    if skip_update:
+        sys.argv.remove("--skip-update")
+
     # Auto-update before anything else — if updated, restart
     # the process so the new code is loaded.
-    updated = auto_update()
-    if updated:
-        import os
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+    if not skip_update:
+        updated = auto_update()
+        if updated:
+            import subprocess as _sp
+            # On Windows, os.execv spawns a child but keeps
+            # the parent alive, corrupting the terminal.
+            # Use subprocess + sys.exit for a clean handoff.
+            # Pass --skip-update so the child doesn't re-check.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            ret = _sp.call(
+                [sys.executable] + sys.argv + ["--skip-update"]
+            )
+            sys.exit(ret)
 
     parser = argparse.ArgumentParser(
         description="ClaudeGhost - Headless Supervisor for Claude Code CLI",
