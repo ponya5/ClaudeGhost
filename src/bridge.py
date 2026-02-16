@@ -250,7 +250,7 @@ def _parse_stream_event(line: str) -> Optional[StreamEvent]:
         if cost:
             se.display = (
                 f"[green]✓ Done[/green] — "
-                f"cost: ${float(cost):.4f}"
+                f"cost: ${float(cost):.6f}"
                 f" turns: {se.num_turns or num_turns}"
                 f" {dur_s}"
             )
@@ -365,7 +365,36 @@ class GhostBridge:
             f'"{self.task[:50]}"'
         )
 
-        self._build_and_spawn(binary, cwd)
+        try:
+            self._build_and_spawn(binary, cwd)
+        except FileNotFoundError:
+            logger.error(
+                "Claude binary not found: %s", binary,
+            )
+            ghost_status.add_log(
+                f"[bold red]Error: Claude binary "
+                f"'{binary}' not found. Is it "
+                f"installed?[/bold red]"
+            )
+            self._state = CliState.EXITED
+            ghost_status.state = "EXITED"
+            if self._on_idle:
+                self._on_idle()
+            return
+        except Exception as exc:
+            logger.exception(
+                "Failed to spawn Claude CLI: %s", exc,
+            )
+            ghost_status.add_log(
+                f"[bold red]Spawn error: "
+                f"{str(exc)[:100]}[/bold red]"
+            )
+            self._state = CliState.EXITED
+            ghost_status.state = "EXITED"
+            if self._on_idle:
+                self._on_idle()
+            return
+
         self._running = True
 
         threading.Thread(
@@ -533,6 +562,23 @@ class GhostBridge:
     # Read loop
     # ------------------------------------------------------------------
     def _read_loop(self) -> None:
+        try:
+            self._read_loop_inner()
+        except Exception as exc:
+            logger.exception(
+                "Read loop crashed: %s", exc,
+            )
+            ghost_status.add_log(
+                f"[bold red]Read loop error: "
+                f"{str(exc)[:100]}[/bold red]"
+            )
+            self._state = CliState.EXITED
+            self._running = False
+            ghost_status.state = "EXITED"
+            if self._on_idle:
+                self._on_idle()
+
+    def _read_loop_inner(self) -> None:
         while self._running:
             chunk = self._read_chunk()
             if chunk is None:
@@ -752,7 +798,7 @@ class GhostBridge:
         if best > self._total_cost:
             self._total_cost = best
             ghost_status.budget_used = best
-            logger.info("Budget update: $%.4f", best)
+            logger.info("Budget update: $%.6f", best)
 
     # ------------------------------------------------------------------
     # Heartbeat / stall detection

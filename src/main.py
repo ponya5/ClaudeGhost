@@ -234,6 +234,21 @@ class ClaudeGhost:
     # -- Query handling ----------------------------------------------
 
     def _handle_query(self, query_text: str) -> None:
+        try:
+            self._handle_query_inner(query_text)
+        except Exception as exc:
+            logger.exception(
+                "Query handler error: %s", exc,
+            )
+            ghost_status.add_log(
+                f"[bold red]Query handler error: "
+                f"{str(exc)[:80]}[/bold red]"
+            )
+            # Auto-approve to avoid hanging
+            if self._bridge:
+                self._bridge.send("y")
+
+    def _handle_query_inner(self, query_text: str) -> None:
         command = extract_command_from_query(query_text)
         if not command:
             command = self._fallback_command(query_text)
@@ -279,6 +294,22 @@ class ClaudeGhost:
     # -- Reply handling ----------------------------------------------
 
     def _handle_reply(self, body: str) -> None:
+        try:
+            self._handle_reply_inner(body)
+        except Exception as exc:
+            logger.exception(
+                "Reply handler error: %s", exc,
+            )
+            ghost_status.add_log(
+                f"[bold red]Reply handler error: "
+                f"{str(exc)[:80]}[/bold red]"
+            )
+            self._notify(
+                f"⚠️ Error processing your reply: "
+                f"{str(exc)[:200]}"
+            )
+
+    def _handle_reply_inner(self, body: str) -> None:
         if self._bridge is None and not self._budget_paused:
             return
         if self._telegram:
@@ -388,7 +419,8 @@ class ClaudeGhost:
                     "\n"
                     "Type your instruction or context "
                     "below.\n"
-                    "This will override the current task."
+                    "This will be added to the current "
+                    "task."
                 )
 
         # ── D: Detonate (kill) ──────────────────────────
@@ -513,13 +545,15 @@ class ClaudeGhost:
                     self._pending_query = None
 
                 new_task = (
-                    f"OVERRIDE: The user changed the "
-                    f"instructions. Original task was: "
                     f"{self._original_task} --- "
-                    f"NEW USER INSTRUCTION: {context} "
-                    f"--- You MUST follow the NEW USER "
-                    f"INSTRUCTION. It takes priority "
-                    f"over the original task."
+                    f"IMPORTANT ADDITIONAL CONTEXT FROM "
+                    f"THE USER: {context} --- "
+                    f"You MUST incorporate this context. "
+                    f"It takes priority over any "
+                    f"conflicting part of the original "
+                    f"task. If the user is changing the "
+                    f"file name or target, use the NEW "
+                    f"name/target they specified."
                 )
                 self.task = new_task
                 self._notify(
@@ -598,6 +632,17 @@ class ClaudeGhost:
 
     def _handle_event(self, event: StreamEvent) -> None:
         """Record stream events into the changelog."""
+        try:
+            self._handle_event_inner(event)
+        except Exception as exc:
+            logger.error(
+                "Event handler error: %s", exc,
+            )
+
+    def _handle_event_inner(
+        self, event: StreamEvent,
+    ) -> None:
+        """Record stream events into the changelog."""
         if event.tool_name:
             name = event.tool_name.lower()
             if name in (
@@ -659,7 +704,7 @@ class ClaudeGhost:
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "\n"
                 f"📊 Usage: {pct:.0f}%\n"
-                f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
+                f"💰 Used: ${cost:.6f} / ${budget:.2f}\n"
                 "\n"
                 "Session will stop at budget limit."
             )
@@ -678,7 +723,7 @@ class ClaudeGhost:
                 "  ⛔ BUDGET REACHED\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "\n"
-                f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
+                f"💰 Used: ${cost:.6f} / ${budget:.2f}\n"
                 "   Execution stopped.\n"
                 "\n"
                 "Reply:\n"
@@ -772,6 +817,26 @@ class ClaudeGhost:
         return True
 
     def _send_summary(self) -> None:
+        try:
+            self._send_summary_inner()
+        except Exception as exc:
+            logger.exception(
+                "Summary generation failed: %s", exc,
+            )
+            ghost_status.add_log(
+                f"[bold red]Summary error: "
+                f"{str(exc)[:80]}[/bold red]"
+            )
+            # Try to send a minimal notification
+            try:
+                self._notify(
+                    f"⚠️ Session ended but summary "
+                    f"generation failed: {str(exc)[:200]}"
+                )
+            except Exception:
+                pass
+
+    def _send_summary_inner(self) -> None:
         assert self._bridge is not None
         s = ghost_status.stats
         turns = self._bridge.num_turns
@@ -804,13 +869,13 @@ class ClaudeGhost:
         # Determine session status
         if self._session_failed:
             status_emoji = "❌"
-            status_text = "FAILED"
+            status_text = "Session Completed with Error"
         elif self._session_completed:
             status_emoji = "✅"
-            status_text = "COMPLETED"
+            status_text = "Task COMPLETED"
         else:
             status_emoji = "⚠️"
-            status_text = "ENDED"
+            status_text = "Session ENDED"
 
         self._changelog.session_outcome = (
             f"{status_emoji} {status_text}"
@@ -824,13 +889,14 @@ class ClaudeGhost:
         changelog_path = self._changelog.save()
 
         summary = (
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"  {status_emoji} Session {status_text}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"  {status_emoji} {status_text}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "\n"
             f"📋 Task: {self._original_task}\n"
             f"⏱️ Duration: {s.elapsed_formatted}\n"
-            f"💰 Cost: ${self._bridge.total_cost:.2f}\n"
+            f"💰 Cost: ${self._bridge.total_cost:.6f}"
+            f" / ${self.config.budget_usd:.2f}\n"
             f"🔄 Turns: {turns}\n"
             f"📊 Queries: {s.queries_total} "
             f"(auto:{s.queries_auto_approved} "
@@ -840,9 +906,33 @@ class ClaudeGhost:
         )
         if self._session_failed and self._session_error_message:
             summary += (
-                f"\n⚠️ {self._session_error_message}\n"
+                "\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  ⚠️ Error Details\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{self._session_error_message}\n"
             )
-        summary += f"\n{self._changelog.get_summary()}"
+
+        # Files & commands summary
+        files = self._changelog.files_modified
+        cmds = self._changelog.commands_executed
+        summary += "\n"
+        if files:
+            summary += (
+                f"📂 Files modified ({len(files)}):\n"
+            )
+            for f in files[-10:]:
+                summary += f"  • {f}\n"
+        else:
+            summary += "📂 Files modified: 0\n"
+        if cmds:
+            summary += (
+                f"⚡ Commands executed ({len(cmds)}):\n"
+            )
+            for c in cmds[-5:]:
+                summary += f"  • {c[:80]}\n"
+        else:
+            summary += "⚡ Commands executed: 0\n"
 
         self._notify(summary)
 
@@ -862,14 +952,14 @@ class ClaudeGhost:
         )
         console.print("\n")
         console.rule(
-            f"[bold green]Session {status_text}"
+            f"[bold green]{status_text}"
             f"[/bold green]"
         )
         console.print(
             f"  Duration: {s.elapsed_formatted}"
         )
         console.print(
-            f"  Cost: ${self._bridge.total_cost:.2f}"
+            f"  Cost: ${self._bridge.total_cost:.6f}"
             f" / ${self.config.budget_usd:.2f}"
         )
         console.print(f"  Turns: {turns}")

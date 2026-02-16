@@ -120,7 +120,7 @@ class ChangeLog:
             bmax = sd.get('budget_max', 0)
             lines.append(
                 f"  Budget:         "
-                f"${used:.2f} / ${bmax:.2f}"
+                f"${used:.6f} / ${bmax:.2f}"
             )
             lines.append("")
             lines.append("-" * 70)
@@ -205,10 +205,18 @@ class ChangeLog:
 
     def get_summary(self) -> str:
         """Get a brief summary for Telegram notification."""
-        summary_lines = [
-            "📝 Session Complete",
-            f"Files modified: {len(self.files_modified)}",
-            f"Commands executed: "
-            f"{len(self.commands_executed)}",
-        ]
-        return "\n".join(summary_lines)
+        parts = []
+        if self.files_modified:
+            parts.append(
+                f"📂 Files modified: "
+                f"{len(self.files_modified)}"
+            )
+            for f in self.files_modified[-5:]:
+                parts.append(f"  • {f}")
+        else:
+            parts.append("📂 Files modified: 0")
+        parts.append(
+            f"⚡ Commands executed: "
+            f"{len(self.commands_executed)}"
+        )
+        return "\n".join(parts)

@@ -198,6 +198,19 @@ class TelegramBot:
                             f"[cyan]Telegram <<<[/cyan] {text[:60]}"
                         )
                         if self._reply_callback:
-                            self._reply_callback(text)
-            except requests.RequestException:
-                pass
+                            try:
+                                self._reply_callback(text)
+                            except Exception as exc:
+                                logger.error(
+                                    "Telegram callback "
+                                    "error: %s", exc,
+                                )
+            except requests.RequestException as exc:
+                logger.debug(
+                    "Telegram poll error: %s", exc,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Telegram poll loop error: %s",
+                    exc,
+                )

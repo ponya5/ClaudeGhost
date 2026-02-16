@@ -151,7 +151,7 @@ class GhostStatus:
 
         # Clamp the right column so it doesn't squeeze
         # the log panels on narrow terminals
-        right_w = min(30, max(22, term_w // 4))
+        right_w = min(34, max(24, term_w // 3))
 
         layout.split_row(
             Layout(name="left", ratio=1),
@@ -162,7 +162,7 @@ class GhostStatus:
             Layout(name="events", ratio=1),
         )
         layout["right"].split_column(
-            Layout(name="status", ratio=1),
+            Layout(name="status", size=12),
             Layout(name="stats", ratio=1),
         )
 
@@ -253,7 +253,7 @@ class GhostStatus:
         )
         status_tbl.add_row(
             "Budget:",
-            f"[{bc}]${self.budget_used:.2f}[/{bc}]"
+            f"[{bc}]${self.budget_used:.4f}[/{bc}]"
             f" / ${self.budget_max:.2f}"
             f" ({budget_pct:.0f}%)",
         )

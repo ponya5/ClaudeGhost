@@ -50,7 +50,26 @@ class ScreenNotifier:
         if self._pending_queue.empty():
             return
 
-        msg_type, message = self._pending_queue.get_nowait()
+        try:
+            msg_type, message = self._pending_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        try:
+            self._process_message(msg_type, message)
+        except Exception as exc:
+            logger.error(
+                "Screen notifier error: %s", exc,
+            )
+            console.print(
+                f"[red]Error processing notification: "
+                f"{exc}[/red]"
+            )
+
+    def _process_message(
+        self, msg_type: str, message: str,
+    ) -> None:
+        """Process a single queued message."""
 
         if msg_type == "info":
             console.print(Panel(message, title="Info", border_style="blue"))

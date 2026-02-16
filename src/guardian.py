@@ -140,7 +140,13 @@ def classify_command(command: str) -> RiskCategory:
 
 
 def evaluate(command: str, afk_level: int) -> tuple[Decision, RiskCategory]:
-    category = classify_command(command)
+    try:
+        category = classify_command(command)
+    except Exception as exc:
+        logger.error(
+            "Guardian classify error: %s", exc,
+        )
+        category = RiskCategory.EXECUTE
     level = max(1, min(5, afk_level))
     decision = _AUTONOMY_MATRIX[level][category]
     label, icon = _RISK_LABELS[category]
