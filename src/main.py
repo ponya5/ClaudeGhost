@@ -189,6 +189,7 @@ class ClaudeGhost:
                                 )
                                 names.add(c)
                             ns = ", ".join(sorted(names))
+                            ghost_status.state = "WAITING"
                             with self._pending_lock:
                                 self._pending_query = (
                                     f"restart: {ns}"
@@ -1227,9 +1228,11 @@ def main() -> None:
         ghost.run()
 
         console.print()
+        console.rule("[bold green]Task Completed[/bold green]")
+        console.print()
         try:
             another = Confirm.ask(
-                "[bold]Start another session?[/bold]",
+                "[bold]Start a NEW session?[/bold]",
                 default=False,
             )
             if not another:
