@@ -935,8 +935,15 @@ def main() -> None:
 
     updated = auto_update()
     if updated:
-        import os
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Re-launch with the new code.  On Windows os.execv
+        # spawns a child instead of replacing the process,
+        # so we use subprocess + sys.exit to get a clean
+        # handoff.
+        import subprocess as _sp
+        ret = _sp.call(
+            [sys.executable] + sys.argv,
+        )
+        sys.exit(ret)
     console.print()
 
     while True:
