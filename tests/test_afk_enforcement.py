@@ -389,3 +389,45 @@ def test_each_afk_level_matrix(level, category, command, expected_decision):
         f"Level {level}, {category.name}: got {decision.name}, "
         f"expected {expected_decision.name}"
     )
+
+
+def test_context_restart_does_not_approve_rejected_tool():
+    """Applying context (C) restarts session but does NOT approve the rejected tool.
+
+    Validates: Rejection flow distinction between A (approve) and C (context).
+    """
+    from unittest.mock import patch
+    ghost, bridge = make_ghost(afk_level=3)
+    # Simulate a rejected tool scenario where bridge exited
+    bridge.state = CliState.EXITED
+    
+    with ghost._pending_lock:
+        ghost._pending_query = "restart: Bash"
+        ghost._pending_tool_name = "Bash"
+    
+    # 1. User replies C -> enters context mode
+    # _handle_reply calls _handle_reply_inner
+    ghost._handle_reply_inner("C")
+    assert ghost._context_state == "awaiting_text"
+    
+    # 2. User provides context
+    ghost._handle_reply_inner("Use python instead")
+    assert ghost._context_state == "awaiting_confirm"
+    
+    # 3. User confirms (Y) -> restart
+    new_bridge = MockBridge()
+    # Mock GhostBridge constructor so we capture the restart
+    with patch("src.main.GhostBridge", return_value=new_bridge):
+        ghost._handle_reply_inner("Y")
+
+    # Pending query/tool should be cleared
+    assert ghost._pending_query is None
+    assert ghost._pending_tool_name is None
+    
+    # Rejected tool (Bash) should NOT be in extra_allowed_tools (that's for A)
+    assert "Bash" not in ghost._extra_allowed_tools
+    
+    # New bridge started
+    assert new_bridge.started is True
+    # Initial task string is updated on the ghost object
+    assert "Use python instead" in ghost.task

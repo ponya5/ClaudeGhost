@@ -270,7 +270,7 @@ def test_unknown_reply_shows_help():
     tg = ghost._telegram
 
     tg.inject_reply("X")
-    assert any("Acknowledge" in m and "Block" in m for m in tg.sent)
+    assert any("Approve/Restart" in m and "Add Context" in m for m in tg.sent)
     print("[PASS] Unknown reply shows help menu (with Telegram)")
 
 

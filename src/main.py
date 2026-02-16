@@ -197,7 +197,8 @@ class ClaudeGhost:
                                     ns
                                 )
                             self._request_approval(
-                                f"🔧 TOOLS NEEDED\n"
+                                f"🔧 User Decision "
+                                f"Required\n"
                                 f"\n"
                                 f"Claude tried to use: "
                                 f"{ns}\n"
@@ -207,9 +208,10 @@ class ClaudeGhost:
                                 f").\n"
                                 f"\n"
                                 f"Reply:\n"
-                                f"  A - ✅ Restart with "
-                                f"tools\n"
-                                f"  D - 💀 Done"
+                                f"  A - ✅ Approve\n"
+                                f"  C - 📝 Add Context\n"
+                                f"  D - 💀 Detonate "
+                                f"(kill process)"
                             )
                             continue
                         self._session_completed = True
@@ -404,6 +406,7 @@ class ClaudeGhost:
                     f"{blocked_tool}"
                 )
                 self._restarting = True
+                self._tool_restart_offered = False
                 if self._bridge:
                     self._bridge.kill()
                 self._bridge = GhostBridge(
@@ -447,6 +450,7 @@ class ClaudeGhost:
             )
             ghost_status.stats.record_blocked()
             self._restarting = True
+            self._tool_restart_offered = False
             # Send "n" to reject the tool, then kill
             if self._bridge:
                 self._bridge.send("n")
@@ -564,9 +568,8 @@ class ClaudeGhost:
                 "❓ Unknown reply.\n"
                 "\n"
                 "Reply:\n"
-                "  A - ✅ Acknowledge\n"
-                "  B - 🚫 Block & Redo\n"
-                "  C - 💬 Add Context\n"
+                "  A - ✅ Approve/Restart\n"
+                "  C - 📝 Add Context\n"
                 "  D - 💀 Detonate (kill)"
             )
 
@@ -619,9 +622,11 @@ class ClaudeGhost:
                     f"{context[:100]}"
                 )
                 self._restarting = True
+                self._tool_restart_offered = False
                 self._bridge.kill()
                 with self._pending_lock:
                     self._pending_query = None
+                    self._pending_tool_name = None
 
                 new_task = (
                     f"{self._original_task} --- "
