@@ -150,11 +150,15 @@ class ClaudeGhost:
                 transient=False,
             ) as live:
                 while not self._shutdown.is_set():
+                    with self._pending_lock:
+                        has_pending = self._pending_query is not None
+
                     if (
                         self._bridge.state
                         == CliState.EXITED
                         and not self._budget_paused
                         and not self._restarting
+                        and not has_pending
                     ):
                         self._session_completed = True
                         break
@@ -294,12 +298,16 @@ class ClaudeGhost:
     def _handle_reply_inner(self, body: str) -> None:
         if self._bridge is None and not self._budget_paused:
             return
-        # Ignore replies if bridge already exited
+        # Ignore replies if bridge already exited AND no pending query
+        with self._pending_lock:
+            has_pending = self._pending_query is not None
+
         if (
             self._bridge is not None
             and self._bridge.state == CliState.EXITED
             and not self._budget_paused
             and not self._restarting
+            and not has_pending
         ):
             return
         if self._telegram:
@@ -329,8 +337,8 @@ class ClaudeGhost:
                 self._pending_query = None
             if approved_cmd:
                 self._changelog.add_command(approved_cmd)
-            # Send "y" to the CLI to approve the tool
-            if self._bridge:
+            # Only send "y" if bridge is still alive
+            if self._bridge and self._bridge.state != CliState.EXITED:
                 self._bridge.send("y")
             ghost_status.state = "RUNNING"
 
