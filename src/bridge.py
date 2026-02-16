@@ -44,30 +44,40 @@ if sys.platform == "win32":
 #   Level 4 (Director):  Auto: read+write+exec — ask: high-risk
 #   Level 5 (God Mode):  Fully autonomous
 # ---------------------------------------------------------------------------
-_ALL_TOOLS = [
-    "Read", "Write", "Edit",
-    "Bash", "WebFetch", "WebSearch",
+# Comprehensive list of Claude Code tools, grouped by risk.
+_READ_TOOLS = [
+    "Read", "Glob", "Grep", "ListFiles",
+    "SearchFiles",
 ]
+_WRITE_TOOLS = ["Write", "Edit"]
+_EXEC_TOOLS = [
+    "Bash", "Task", "WebFetch", "WebSearch",
+]
+_ALL_TOOLS = _READ_TOOLS + _WRITE_TOOLS + _EXEC_TOOLS
 
-# Tools allowed (auto-approved) at each AFK level.
-# In -p (non-interactive) mode, Claude CLI won't prompt
-# for y/n — tools not in --allowedTools are REJECTED,
-# and tools in --allowedTools are AUTO-APPROVED.
-# This enforces the autonomy matrix at the CLI level.
+# Tools pre-approved (--allowedTools) at each AFK level.
+# In INTERACTIVE mode (levels 1-3): passed to
+# --allowedTools so the CLI auto-approves them and
+# only PROMPTS (y/n) for tools NOT in this list.
+# In PRINT mode (levels 4-5): same, but unapproved
+# tools are instantly rejected (no prompt).
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
-    1: [],                                   # Paranoid: nothing auto
-    2: ["Read"],                              # Auditor:  read only
-    3: ["Read", "Write", "Edit"],             # Manager:  read+write
-    4: ["Read", "Write", "Edit",              # Director: read+write+exec
-        "Bash", "WebFetch", "WebSearch"],
-    5: _ALL_TOOLS,                            # God Mode: everything
+    1: [],                          # Paranoid: prompt for all
+    2: list(_READ_TOOLS),           # Auditor:  read auto
+    3: list(_READ_TOOLS)            # Manager:  read+write auto
+       + list(_WRITE_TOOLS),
+    4: list(_ALL_TOOLS),            # Director: all auto
+    5: list(_ALL_TOOLS),            # God Mode: all auto
 }
 
 # Maps stream-json tool names → canonical --allowedTools names.
-# Used to check if a tool_use event was auto-approved or blocked.
 _TOOL_TO_ALLOWED: dict[str, str] = {
     "read": "Read",
     "readfile": "Read",
+    "glob": "Glob",
+    "listfiles": "ListFiles",
+    "searchfiles": "SearchFiles",
+    "grep": "Grep",
     "write": "Write",
     "writefile": "Write",
     "create": "Write",
@@ -75,9 +85,16 @@ _TOOL_TO_ALLOWED: dict[str, str] = {
     "editfile": "Edit",
     "bash": "Bash",
     "execute": "Bash",
+    "task": "Task",
     "websearch": "WebSearch",
     "webfetch": "WebFetch",
 }
+
+# Levels that use INTERACTIVE mode (no -p flag).
+# The CLI shows real (y/n) prompts for unapproved tools
+# and WAITS for the bridge to send "y" or "n".
+# Levels NOT here use -p (print) mode.
+_INTERACTIVE_LEVELS = {1, 2, 3}
 
 
 # ---------------------------------------------------------------------------
@@ -492,14 +509,33 @@ class GhostBridge:
         """Build the command and spawn via winpty or
         subprocess depending on platform.
 
-        Level 5 (God Mode) uses --dangerously-skip-permissions
-        for full autonomy.  Levels 1-4 use --allowedTools
-        to restrict which tools Claude can use without
-        prompting.  In -p mode the CLI never shows y/n
-        prompts, so we MUST use --allowedTools to enforce
-        the autonomy matrix at the CLI level.
+        Levels 1-3 (INTERACTIVE mode):
+          No -p flag.  The task is passed as a positional
+          argument so the CLI processes it then shows
+          real (y/n) prompts for unapproved tools.
+          The bridge's _detect_state catches them and
+          the guardian in main.py asks the user.
+          --allowedTools is passed for auto-approved
+          tools so the CLI only prompts for the rest.
+
+        Levels 4-5 (PRINT mode):
+          Uses -p for non-interactive one-shot execution.
+          Level 4 passes --allowedTools for all tools.
+          Level 5 uses --dangerously-skip-permissions.
         """
-        cmd_parts = [binary, "-p", self.task]
+        interactive = (
+            self._afk_level in _INTERACTIVE_LEVELS
+        )
+
+        if interactive:
+            # Interactive mode: task as positional arg.
+            # CLI will process the task and PAUSE at
+            # permission prompts for unapproved tools.
+            cmd_parts = [binary, self.task]
+        else:
+            # Print mode: -p for one-shot execution.
+            cmd_parts = [binary, "-p", self.task]
+
         cmd_parts += [
             "--output-format", "stream-json",
             "--verbose",
@@ -507,11 +543,10 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
-        # Tell the model to execute autonomously without
-        # asking the user for confirmation.  This prevents
-        # the model from generating misleading text like
-        # "Would you like me to proceed?" while the CLI
-        # has already auto-approved the tool.
+        # Tell the model to execute tasks directly
+        # without generating misleading text like
+        # "Would you like me to proceed?" — the CLI
+        # handles permission prompts, not the model.
         cmd_parts += [
             "--append-system-prompt",
             "You are running in autonomous headless mode. "
@@ -521,41 +556,33 @@ class GhostBridge:
             "for approval. Just do the work immediately.",
         ]
 
-        # Level 5 (God Mode): full autonomy, skip all prompts.
-        #   NOTE: --max-budget-usd is ALWAYS passed (below),
-        #   so budget limits are enforced even in God Mode.
-        #   _check_budget() in main.py also runs every loop
-        #   iteration regardless of level.
-        # Levels 1-4: use --allowedTools so only the tools
-        # approved by the autonomy matrix are permitted.
-        # Tools NOT in --allowedTools are REJECTED by the CLI.
+        # ── Permission configuration ──────────────────
+        #   Budget is ALWAYS enforced (--max-budget-usd
+        #   and _check_budget), even in God Mode.
+        allowed = list(
+            _LEVEL_ALLOWED_TOOLS.get(
+                self._afk_level, []
+            )
+        )
+        # Merge any user-approved extra tools
+        for t in self._extra_allowed_tools:
+            if t not in allowed:
+                allowed.append(t)
+
         if self._afk_level >= 5:
+            # God Mode: skip all permission checks.
             cmd_parts += [
                 "--dangerously-skip-permissions",
             ]
-        else:
-            allowed = list(
-                _LEVEL_ALLOWED_TOOLS.get(
-                    self._afk_level, []
-                )
-            )
-            # Merge any user-approved extra tools
-            for t in self._extra_allowed_tools:
-                if t not in allowed:
-                    allowed.append(t)
-
-            if allowed:
-                for tool in allowed:
-                    cmd_parts += ["--allowedTools", tool]
-            else:
-                # No tools allowed (e.g. Paranoid level 1).
-                # Explicitly block ALL tools so the CLI
-                # doesn't fall back to its default of
-                # allowing everything in -p mode.
-                for tool in _ALL_TOOLS:
-                    cmd_parts += [
-                        "--disallowedTools", tool,
-                    ]
+        elif allowed:
+            # Pass --allowedTools for auto-approved tools.
+            # In interactive mode: unapproved tools get
+            #   a real (y/n) prompt that the bridge
+            #   detects and forwards to the user.
+            # In print mode: unapproved tools are
+            #   instantly rejected.
+            for tool in allowed:
+                cmd_parts += ["--allowedTools", tool]
 
         # Budget is ALWAYS enforced, even in God Mode.
         budget = settings.max_budget_usd
@@ -565,27 +592,29 @@ class GhostBridge:
             ]
 
         logger.info("Command: %s", cmd_parts)
-        effective = list(
-            _LEVEL_ALLOWED_TOOLS.get(
-                self._afk_level, []
-            )
-        )
-        for t in self._extra_allowed_tools:
-            if t not in effective:
-                effective.append(t)
         if self._afk_level >= 5:
             mode_desc = "full autonomy (skip-permissions)"
-        else:
-            tools_str = (
-                ", ".join(effective) if effective
+        elif interactive:
+            auto_str = (
+                ", ".join(allowed) if allowed
                 else "none"
             )
             mode_desc = (
-                f"level {self._afk_level}, "
-                f"allowed tools: {tools_str}"
+                f"interactive level {self._afk_level}, "
+                f"auto: {auto_str}, "
+                f"rest: prompt user"
+            )
+        else:
+            tools_str = (
+                ", ".join(allowed) if allowed
+                else "none"
+            )
+            mode_desc = (
+                f"print level {self._afk_level}, "
+                f"allowed: {tools_str}"
             )
         ghost_status.add_log(
-            f"[bold]Headless mode:[/bold] "
+            f"[bold]Mode:[/bold] "
             f"{mode_desc}, "
             f"budget: ${budget:.2f}"
         )
@@ -779,10 +808,15 @@ class GhostBridge:
     def _detect_state(self) -> None:
         tail = self._display_buffer[-3000:]
 
-        # With --dangerously-skip-permissions, Claude CLI
-        # shouldn't produce interactive prompts. But if
-        # any text-based prompts appear in non-JSON output
-        # (edge cases), we detect them and auto-approve.
+        # State detection:
+        #   QUERY: CLI shows a (y/n) permission prompt.
+        #     In interactive mode (levels 1-3), this is
+        #     how the CLI asks to use unapproved tools.
+        #     The guardian evaluates and the user
+        #     approves/blocks via Telegram.
+        #   IDLE: CLI shows the > prompt, meaning the
+        #     task is done (in interactive mode) or the
+        #     CLI is waiting for input.
 
         if (
             _QUERY_RE.search(tail)
@@ -800,7 +834,7 @@ class GhostBridge:
                 self._on_query(tail)
                 # Level 5 uses --dangerously-skip-permissions
                 # so queries shouldn't appear, but if they
-                # do, auto-approve.  Levels 1-4 are handled
+                # do, auto-approve.  Levels 1-3 are handled
                 # by the guardian in main.py which will call
                 # bridge.send("y") or bridge.send("n").
                 if self._afk_level >= 5:
@@ -811,6 +845,15 @@ class GhostBridge:
                 self._query_fired_for = None
                 ghost_status.state = "IDLE"
                 logger.info("State -> IDLE")
+                # In interactive mode, IDLE means the
+                # task is done.  Send /exit to cleanly
+                # close the CLI session.
+                if self._afk_level in _INTERACTIVE_LEVELS:
+                    logger.info(
+                        "Interactive task done, "
+                        "sending /exit"
+                    )
+                    self.send("/exit")
                 if self._on_idle:
                     self._on_idle()
         else:

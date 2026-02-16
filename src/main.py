@@ -699,50 +699,6 @@ class ClaudeGhost:
                 else event.tool_name
             )
 
-            # ── Check if this tool was blocked ──────────
-            # At levels 1-4, tools not in the allowed
-            # list are rejected by the CLI.  Detect this
-            # and ask the user.
-            if self.afk_level < 5:
-                canonical = _TOOL_TO_ALLOWED.get(
-                    name, event.tool_name
-                )
-                allowed = set(
-                    _LEVEL_ALLOWED_TOOLS.get(
-                        self.afk_level, []
-                    )
-                )
-                allowed.update(self._extra_allowed_tools)
-                if canonical not in allowed:
-                    # Tool is blocked — ask user
-                    ghost_status.add_log(
-                        f"[yellow]⚠ Tool blocked:"
-                        f"[/yellow] {cmd_str[:60]}"
-                    )
-                    ghost_status.state = "WAITING"
-                    with self._pending_lock:
-                        self._pending_query = cmd_str
-                        self._pending_tool_name = (
-                            canonical
-                        )
-                    self._request_approval(
-                        f"⚠️ TOOL BLOCKED\n"
-                        f"\n"
-                        f"🔧 Tool: {cmd_str[:120]}\n"
-                        f"🔒 Not allowed at level "
-                        f"{self.afk_level} "
-                        f"({self.config.level_name})\n"
-                        f"\n"
-                        f"Reply:\n"
-                        f"  A - ✅ Approve & Restart\n"
-                        f"  B - 🚫 Skip (let Claude "
-                        f"adapt)\n"
-                        f"  D - 💀 Detonate (kill)"
-                    )
-                    # Don't log as executed since it
-                    # was blocked
-                    return
-
             # Record the action in the changelog
             if name in (
                 "write", "edit", "editfile",
