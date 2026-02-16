@@ -77,6 +77,7 @@ class ClaudeGhost:
         # with the tool allowed if they approve.
         self._extra_allowed_tools: list[str] = []
         self._pending_tool_name: Optional[str] = None
+        self._tool_restart_offered = False
 
         ghost_status.reset()
         ghost_status.current_task = config.task
@@ -170,6 +171,47 @@ class ClaudeGhost:
                         and not self._restarting
                         and not has_pending
                     ):
+                        # Check if tools were rejected
+                        # and offer restart before ending.
+                        rej = self._bridge.rejected_tools
+                        if (
+                            rej
+                            and self.afk_level < 5
+                            and not self._tool_restart_offered
+                        ):
+                            self._tool_restart_offered = True
+                            names = set()
+                            for r in rej:
+                                p = r.split(":", 1)
+                                lo = p[0].strip().lower()
+                                c = _TOOL_TO_ALLOWED.get(
+                                    lo, p[0].strip()
+                                )
+                                names.add(c)
+                            ns = ", ".join(sorted(names))
+                            with self._pending_lock:
+                                self._pending_query = (
+                                    f"restart: {ns}"
+                                )
+                                self._pending_tool_name = (
+                                    ns
+                                )
+                            self._request_approval(
+                                f"🔧 TOOLS NEEDED\n"
+                                f"\n"
+                                f"Claude tried to use: "
+                                f"{ns}\n"
+                                f"Blocked at level "
+                                f"{self.afk_level} "
+                                f"({self.config.level_name}"
+                                f").\n"
+                                f"\n"
+                                f"Reply:\n"
+                                f"  A - ✅ Restart with "
+                                f"tools\n"
+                                f"  D - 💀 Done"
+                            )
+                            continue
                         self._session_completed = True
                         break
                     if (
@@ -485,6 +527,7 @@ class ClaudeGhost:
             )
             with self._pending_lock:
                 self._pending_query = None
+                self._pending_tool_name = None
             self._bridge.kill()
             self._session_terminated = True
 
@@ -680,12 +723,10 @@ class ClaudeGhost:
     ) -> None:
         """Record stream events into the changelog.
 
-        For levels 1-4, tools only execute if they are in
-        the --allowedTools list.  When a tool is NOT in
-        the list, the CLI rejects it.  We detect the
-        rejected tool_use here and ask the user via
-        Telegram whether to approve (restart with tool).
-        For level 5, all tools execute automatically.
+        In -p mode, tools in --allowedTools execute
+        automatically; others are rejected by the CLI.
+        We detect rejections and track them for the
+        summary notification.
         """
         if event.tool_name:
             name = event.tool_name.lower()
@@ -698,6 +739,30 @@ class ClaudeGhost:
                 if (path or inp)
                 else event.tool_name
             )
+
+            # Track tool rejections for levels 1-4.
+            # The bridge._allowed_set tells us what
+            # --allowedTools we passed.  If the model
+            # tried a tool not in the set, the CLI
+            # rejected it.
+            if (
+                self._bridge
+                and self.afk_level < 5
+                and self._bridge._allowed_set
+            ):
+                canonical = _TOOL_TO_ALLOWED.get(
+                    name, event.tool_name
+                )
+                if canonical not in (
+                    self._bridge._allowed_set
+                ):
+                    self._bridge._rejected_tools.append(
+                        cmd_str
+                    )
+                    ghost_status.add_log(
+                        f"[yellow]⚠ Tool rejected:"
+                        f"[/yellow] {cmd_str[:60]}"
+                    )
 
             # Record the action in the changelog
             if name in (
@@ -987,6 +1052,22 @@ class ClaudeGhost:
                 summary += f"  • {c[:80]}\n"
         else:
             summary += "⚡ Commands executed: 0\n"
+        # Rejected tools info (levels 1-4)
+        rejected = (
+            self._bridge.rejected_tools
+            if self._bridge else []
+        )
+        if rejected:
+            unique = list(dict.fromkeys(rejected))
+            summary += (
+                f"\n🚫 Tools rejected ({len(unique)}):\n"
+            )
+            for t in unique[:10]:
+                summary += f"  • {t[:80]}\n"
+            summary += (
+                "\n💡 Increase AFK level or reply A "
+                "to restart with these tools.\n"
+            )
 
         self._notify(summary)
 

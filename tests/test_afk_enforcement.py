@@ -29,6 +29,8 @@ class MockBridge:
         self.sent: list[str] = []
         self.killed = False
         self.started = False
+        self._allowed_set: set[str] = set()
+        self._rejected_tools: list[str] = []
 
     @property
     def state(self) -> CliState:
@@ -45,6 +47,10 @@ class MockBridge:
     @property
     def num_turns(self) -> int:
         return 0
+
+    @property
+    def rejected_tools(self) -> list[str]:
+        return list(self._rejected_tools)
 
     def send(self, text: str) -> None:
         self.sent.append(text)

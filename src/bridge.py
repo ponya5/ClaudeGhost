@@ -56,15 +56,14 @@ _EXEC_TOOLS = [
 _ALL_TOOLS = _READ_TOOLS + _WRITE_TOOLS + _EXEC_TOOLS
 
 # Tools pre-approved (--allowedTools) at each AFK level.
-# In INTERACTIVE mode (levels 1-3): passed to
-# --allowedTools so the CLI auto-approves them and
-# only PROMPTS (y/n) for tools NOT in this list.
-# In PRINT mode (levels 4-5): same, but unapproved
-# tools are instantly rejected (no prompt).
+# ALL levels use -p (print) mode.  Tools in the allowed
+# list execute automatically; others are REJECTED by the
+# CLI (no interactive prompt in -p mode).  The bridge
+# detects rejected tools and notifies the user.
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
-    1: [],                          # Paranoid: prompt for all
-    2: list(_READ_TOOLS),           # Auditor:  read auto
-    3: list(_READ_TOOLS)            # Manager:  read+write auto
+    1: list(_READ_TOOLS),           # Paranoid: read-only
+    2: list(_READ_TOOLS),           # Auditor:  read-only
+    3: list(_READ_TOOLS)            # Manager:  read+write
        + list(_WRITE_TOOLS),
     4: list(_ALL_TOOLS),            # Director: all auto
     5: list(_ALL_TOOLS),            # God Mode: all auto
@@ -89,12 +88,6 @@ _TOOL_TO_ALLOWED: dict[str, str] = {
     "websearch": "WebSearch",
     "webfetch": "WebFetch",
 }
-
-# Levels that use INTERACTIVE mode (no -p flag).
-# The CLI shows real (y/n) prompts for unapproved tools
-# and WAITS for the bridge to send "y" or "n".
-# Levels NOT here use -p (print) mode.
-_INTERACTIVE_LEVELS = {1, 2, 3}
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +378,10 @@ class GhostBridge:
         self._num_turns: int = 0
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
+        # Set in _build_and_spawn based on level
+        self._allowed_set: set[str] = set()
+        # Tools the model tried but CLI rejected
+        self._rejected_tools: list[str] = []
 
     @property
     def state(self) -> CliState:
@@ -397,6 +394,11 @@ class GhostBridge:
     @property
     def num_turns(self) -> int:
         return self._num_turns
+
+    @property
+    def rejected_tools(self) -> list[str]:
+        """Tools the model tried but CLI rejected."""
+        return list(self._rejected_tools)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -509,33 +511,18 @@ class GhostBridge:
         """Build the command and spawn via winpty or
         subprocess depending on platform.
 
-        Levels 1-3 (INTERACTIVE mode):
-          No -p flag.  The task is passed as a positional
-          argument so the CLI processes it then shows
-          real (y/n) prompts for unapproved tools.
-          The bridge's _detect_state catches them and
-          the guardian in main.py asks the user.
-          --allowedTools is passed for auto-approved
-          tools so the CLI only prompts for the rest.
+        ALL levels use -p (print/non-interactive) mode
+        because --output-format stream-json is not
+        compatible with interactive mode (the CLI uses
+        its TUI instead, producing garbled output).
 
-        Levels 4-5 (PRINT mode):
-          Uses -p for non-interactive one-shot execution.
-          Level 4 passes --allowedTools for all tools.
-          Level 5 uses --dangerously-skip-permissions.
+        Level 5: --dangerously-skip-permissions.
+        Levels 1-4: --allowedTools restricts which tools
+          auto-execute.  Unapproved tools are rejected
+          by the CLI; the bridge detects rejections and
+          notifies the user.
         """
-        interactive = (
-            self._afk_level in _INTERACTIVE_LEVELS
-        )
-
-        if interactive:
-            # Interactive mode: task as positional arg.
-            # CLI will process the task and PAUSE at
-            # permission prompts for unapproved tools.
-            cmd_parts = [binary, self.task]
-        else:
-            # Print mode: -p for one-shot execution.
-            cmd_parts = [binary, "-p", self.task]
-
+        cmd_parts = [binary, "-p", self.task]
         cmd_parts += [
             "--output-format", "stream-json",
             "--verbose",
@@ -543,10 +530,7 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
-        # Tell the model to execute tasks directly
-        # without generating misleading text like
-        # "Would you like me to proceed?" — the CLI
-        # handles permission prompts, not the model.
+        # Tell the model to execute tasks directly.
         cmd_parts += [
             "--append-system-prompt",
             "You are running in autonomous headless mode. "
@@ -557,30 +541,21 @@ class GhostBridge:
         ]
 
         # ── Permission configuration ──────────────────
-        #   Budget is ALWAYS enforced (--max-budget-usd
-        #   and _check_budget), even in God Mode.
         allowed = list(
             _LEVEL_ALLOWED_TOOLS.get(
                 self._afk_level, []
             )
         )
-        # Merge any user-approved extra tools
         for t in self._extra_allowed_tools:
             if t not in allowed:
                 allowed.append(t)
+        self._allowed_set = set(allowed)
 
         if self._afk_level >= 5:
-            # God Mode: skip all permission checks.
             cmd_parts += [
                 "--dangerously-skip-permissions",
             ]
         elif allowed:
-            # Pass --allowedTools for auto-approved tools.
-            # In interactive mode: unapproved tools get
-            #   a real (y/n) prompt that the bridge
-            #   detects and forwards to the user.
-            # In print mode: unapproved tools are
-            #   instantly rejected.
             for tool in allowed:
                 cmd_parts += ["--allowedTools", tool]
 
@@ -594,23 +569,13 @@ class GhostBridge:
         logger.info("Command: %s", cmd_parts)
         if self._afk_level >= 5:
             mode_desc = "full autonomy (skip-permissions)"
-        elif interactive:
-            auto_str = (
-                ", ".join(allowed) if allowed
-                else "none"
-            )
-            mode_desc = (
-                f"interactive level {self._afk_level}, "
-                f"auto: {auto_str}, "
-                f"rest: prompt user"
-            )
         else:
             tools_str = (
                 ", ".join(allowed) if allowed
                 else "none"
             )
             mode_desc = (
-                f"print level {self._afk_level}, "
+                f"level {self._afk_level}, "
                 f"allowed: {tools_str}"
             )
         ghost_status.add_log(
@@ -808,16 +773,6 @@ class GhostBridge:
     def _detect_state(self) -> None:
         tail = self._display_buffer[-3000:]
 
-        # State detection:
-        #   QUERY: CLI shows a (y/n) permission prompt.
-        #     In interactive mode (levels 1-3), this is
-        #     how the CLI asks to use unapproved tools.
-        #     The guardian evaluates and the user
-        #     approves/blocks via Telegram.
-        #   IDLE: CLI shows the > prompt, meaning the
-        #     task is done (in interactive mode) or the
-        #     CLI is waiting for input.
-
         if (
             _QUERY_RE.search(tail)
             or _TOOL_QUERY_RE.search(tail)
@@ -832,11 +787,6 @@ class GhostBridge:
                 ghost_status.state = "QUERY"
                 logger.info("State -> QUERY")
                 self._on_query(tail)
-                # Level 5 uses --dangerously-skip-permissions
-                # so queries shouldn't appear, but if they
-                # do, auto-approve.  Levels 1-3 are handled
-                # by the guardian in main.py which will call
-                # bridge.send("y") or bridge.send("n").
                 if self._afk_level >= 5:
                     self.send("y")
         elif _PROMPT_RE.search(tail):
@@ -845,15 +795,6 @@ class GhostBridge:
                 self._query_fired_for = None
                 ghost_status.state = "IDLE"
                 logger.info("State -> IDLE")
-                # In interactive mode, IDLE means the
-                # task is done.  Send /exit to cleanly
-                # close the CLI session.
-                if self._afk_level in _INTERACTIVE_LEVELS:
-                    logger.info(
-                        "Interactive task done, "
-                        "sending /exit"
-                    )
-                    self.send("/exit")
                 if self._on_idle:
                     self._on_idle()
         else:
