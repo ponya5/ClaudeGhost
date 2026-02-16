@@ -1000,28 +1000,29 @@ def main() -> None:
         "--model", "-m", type=str, default=None,
         help="Claude model",
     )
-    parser.add_argument(
-        "--skip-update", action="store_true",
-        help=argparse.SUPPRESS,
-    )
     args = parser.parse_args()
 
-    if not args.skip_update:
+    # Auto-update (skipped if already handled by
+    # claudeghost.py or a previous re-exec).
+    if "--skip-update" not in sys.argv:
         updated = auto_update()
         if updated:
-            # Re-launch with the new code.  On Windows
-            # os.execv spawns a child instead of replacing
-            # the process, so we use subprocess + sys.exit
-            # for a clean handoff.  Pass --skip-update so
-            # the child doesn't re-check.
-            import subprocess as _sp
             sys.stdout.flush()
             sys.stderr.flush()
-            ret = _sp.call(
-                [sys.executable] + sys.argv
-                + ["--skip-update"],
-            )
-            sys.exit(ret)
+            mods_to_drop = [
+                k for k in sys.modules
+                if k.startswith("src.") or k == "src"
+            ]
+            for k in mods_to_drop:
+                del sys.modules[k]
+            sys.argv.append("--skip-update")
+            from src.main import main as _main
+            _main()
+            return
+
+    # Clean up the flag so argparse doesn't choke
+    if "--skip-update" in sys.argv:
+        sys.argv.remove("--skip-update")
     console.print()
 
     while True:

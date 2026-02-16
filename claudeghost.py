@@ -29,27 +29,34 @@ from src.utils import logger
 
 def main():
     """Main entry point for ClaudeGhost."""
-    # Check for --skip-update (used after auto-restart)
-    skip_update = "--skip-update" in sys.argv
-    if skip_update:
-        sys.argv.remove("--skip-update")
-
-    # Auto-update before anything else — if updated, restart
-    # the process so the new code is loaded.
-    if not skip_update:
+    # Auto-update before anything else — if updated,
+    # reload modules and call main() again in the SAME
+    # process so the .bat / shell keeps waiting on us
+    # and the cursor stays where it should.
+    if "--skip-update" not in sys.argv:
         updated = auto_update()
         if updated:
-            import subprocess as _sp
-            # On Windows, os.execv spawns a child but keeps
-            # the parent alive, corrupting the terminal.
-            # Use subprocess + sys.exit for a clean handoff.
-            # Pass --skip-update so the child doesn't re-check.
             sys.stdout.flush()
             sys.stderr.flush()
-            ret = _sp.call(
-                [sys.executable] + sys.argv + ["--skip-update"]
-            )
-            sys.exit(ret)
+            # Clear all cached src.* modules so Python
+            # re-reads the updated files from disk.
+            mods_to_drop = [
+                k for k in sys.modules
+                if k.startswith("src.") or k == "src"
+            ]
+            for k in mods_to_drop:
+                del sys.modules[k]
+            # Prevent infinite update loop on re-entry
+            sys.argv.append("--skip-update")
+            # Re-import the updated main and call it
+            from src.main import main as _main
+            _main()
+            return
+
+    # Remove the skip-update flag so it doesn't
+    # interfere with argparse
+    if "--skip-update" in sys.argv:
+        sys.argv.remove("--skip-update")
 
     parser = argparse.ArgumentParser(
         description="ClaudeGhost - Headless Supervisor for Claude Code CLI",
