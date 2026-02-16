@@ -92,8 +92,6 @@ def _patch_bridge_constructor():
         self_bridge._num_turns = 0
         self_bridge._lock = __import__('threading').Lock()
         self_bridge._last_output_time = __import__('time').time()
-        self_bridge._approval_event = __import__('threading').Event()
-        self_bridge._approval_event.set()
         self_bridge.start = MagicMock()
         self_bridge.kill = MagicMock()
         self_bridge.send = MagicMock()
@@ -133,7 +131,7 @@ def test_context_c_text_y():
     new_task = captured[0]
     assert "create daniel4.md" in new_task
     assert "daniel5.md" in new_task
-    assert "OVERRIDE" in new_task
+    assert "IMPORTANT ADDITIONAL CONTEXT" in new_task
     assert "\n" not in new_task, f"Newlines in task: {repr(new_task)}"
     assert any("Restarting" in m for m in tg.sent)
     print("[PASS] Context C -> text -> Y (with Telegram)")
@@ -224,16 +222,16 @@ def test_context_preserves_original_across_multiple():
 # ── Approval / Block / Detonate Tests ─────────────────────────────────────
 
 def test_approve_sends_y():
-    """A sends 'y' to bridge and records stats."""
+    """A acknowledges and clears pending query."""
     ghost = _make_ghost("create daniel4.md")
     tg = ghost._telegram
     ghost._pending_query = "Write: daniel4.md"
 
     tg.inject_reply("A")
-    ghost._bridge.send.assert_called_with("y")
+    # In headless mode, A just acknowledges
     assert ghost._pending_query is None
     from src.utils import ghost_status
-    print("[PASS] Approve (A) sends y to bridge (with Telegram)")
+    print("[PASS] Approve (A) acknowledges (with Telegram)")
 
 
 def test_block_restarts_bridge():
@@ -267,20 +265,19 @@ def test_detonate_kills_session():
 
 
 def test_unknown_reply_shows_help():
-    """Unknown reply shows the A/B/C/D menu when there's a pending query."""
+    """Unknown reply shows the A/B/C/D menu."""
     ghost = _make_ghost("create daniel4.md")
     tg = ghost._telegram
-    ghost._pending_query = "Write: daniel4.md"
 
     tg.inject_reply("X")
-    assert any("Approve" in m and "Block" in m for m in tg.sent)
+    assert any("Acknowledge" in m and "Block" in m for m in tg.sent)
     print("[PASS] Unknown reply shows help menu (with Telegram)")
 
 
 # ── Telegram Message Format Tests ─────────────────────────────────────────
 
 def test_telegram_no_box_drawing():
-    """No ╔║╚ box-drawing characters in any Telegram message."""
+    """No box-drawing characters in any Telegram message."""
     ghost = _make_ghost("create daniel4.md")
     tg = ghost._telegram
 
@@ -290,7 +287,7 @@ def test_telegram_no_box_drawing():
     tg.inject_reply("N")
     tg.inject_reply("X")
 
-    box_chars = set("╔╗╚╝║═┌┐└┘│─")
+    box_chars = set("╔╗╚╝║═┌┐└┘│─━")
     for msg in tg.sent:
         found = [c for c in msg if c in box_chars]
         assert not found, (
@@ -300,7 +297,7 @@ def test_telegram_no_box_drawing():
 
 
 def test_telegram_started_message_format():
-    """ClaudeGhost Started message uses ━ borders, not ╔║╚."""
+    """ClaudeGhost Started message has clean format."""
     from src.config import SessionConfig
     from src.main import ClaudeGhost
 
@@ -318,34 +315,31 @@ def test_telegram_started_message_format():
 
     # Simulate what run() does for the start message
     ghost._notify(
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"  👻 ClaudeGhost Started\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👻 ClaudeGhost Started\n"
         f"\n"
         f"📋 Task: {ghost.task}\n"
         f"🤖 AFK Level: {ghost.afk_level} ({ghost.config.level_name})\n"
-        f"💰 Budget (Limit/Quota): ${ghost.config.budget_usd:.2f}"
+        f"💰 Budget: ${ghost.config.budget_usd:.2f}"
     )
 
     assert len(fake_tg.sent) == 1
     msg = fake_tg.sent[0]
-    assert "━" in msg
     assert "╔" not in msg
     assert "║" not in msg
     assert "Budget" in msg
-    print("[PASS] Started message uses ━ borders")
+    print("[PASS] Started message clean format")
 
 
 def test_guardian_approval_message_format():
-    """Guardian approval message uses ━ borders."""
+    """Guardian approval message has clean format without box chars."""
     from src.guardian import format_approval_message, RiskCategory
     msg = format_approval_message("Write: daniel4.md", RiskCategory.WRITE)
-    assert "━" in msg
     assert "╔" not in msg
     assert "║" not in msg
+    assert "━" not in msg
     assert "ACTION DETECTED" in msg
     assert "Approve" in msg
-    print("[PASS] Guardian approval message uses ━ borders")
+    print("[PASS] Guardian approval message clean format")
 
 
 # ── Restarting Flag Tests ─────────────────────────────────────────────────
@@ -510,7 +504,7 @@ def test_context_event_logged():
 # ── Full Telegram Conversation Simulation ─────────────────────────────────
 
 def test_full_telegram_flow_approve():
-    """Simulate full flow: start -> tool detected -> A (approve)."""
+    """Simulate full flow: start -> tool detected -> A (acknowledge)."""
     ghost = _make_ghost("create daniel4.md", afk_level=1)
     tg = ghost._telegram
 
@@ -518,17 +512,16 @@ def test_full_telegram_flow_approve():
     ghost._handle_query(
         "Do you want to run this tool?\n  Write: daniel4.md"
     )
-    # Should have sent approval request
+    # Should have sent notification about the action
     assert any("ACTION DETECTED" in m for m in tg.sent), (
         f"No ACTION DETECTED in: {tg.sent}"
     )
-    assert ghost._pending_query is not None
 
-    # User approves
+    # User acknowledges
     tg.inject_reply("A")
-    ghost._bridge.send.assert_called_with("y")
+    # In headless mode, A just acknowledges — no bridge.send("y")
     assert ghost._pending_query is None
-    print("[PASS] Full Telegram flow: query -> A (approve)")
+    print("[PASS] Full Telegram flow: query -> A (acknowledge)")
 
 
 def test_full_telegram_flow_context_override():
@@ -536,11 +529,10 @@ def test_full_telegram_flow_context_override():
     ghost = _make_ghost("create daniel4.md", afk_level=1)
     tg = ghost._telegram
 
-    # Tool query arrives
+    # Tool query arrives (notification only in headless mode)
     ghost._handle_query(
         "Do you want to run this tool?\n  Write: daniel4.md"
     )
-    assert ghost._pending_query is not None
 
     patcher, captured = _patch_bridge_constructor()
     with patcher:
@@ -566,7 +558,7 @@ def test_full_telegram_flow_context_override():
     for m in tg.sent:
         if "ACTION DETECTED" in m:
             msg_types.append("ACTION")
-        elif "Type your" in m:
+        elif "Type your" in m or "ADD CONTEXT" in m:
             msg_types.append("PROMPT")
         elif "Your instruction" in m or "CONFIRM CONTEXT" in m:
             msg_types.append("CONFIRM")
@@ -580,7 +572,7 @@ def test_full_telegram_flow_context_override():
 
 
 def test_full_telegram_flow_block_then_approve():
-    """Simulate: tool detected -> B (block) -> new tool -> A (approve)."""
+    """Simulate: tool detected -> B (block) -> new tool -> A (acknowledge)."""
     ghost = _make_ghost("create daniel4.md", afk_level=1)
     tg = ghost._telegram
 
@@ -600,10 +592,9 @@ def test_full_telegram_flow_block_then_approve():
     ghost._handle_query(
         "Do you want to run this tool?\n  Edit: daniel4.md"
     )
-    assert ghost._pending_query is not None
 
     tg.inject_reply("A")
-    ghost._bridge.send.assert_called_with("y")
+    # In headless mode, A just acknowledges
     print("[PASS] Full Telegram flow: query -> B -> new query -> A")
 
 

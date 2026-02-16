@@ -27,16 +27,27 @@ if sys.platform == "win32":
         pass
 
 # ---------------------------------------------------------------------------
-# AFK level -> tools the BRIDGE auto-approves
-# All tools are passed to Claude CLI via --allowedTools so it
-# never auto-denies anything. The bridge blocks the read loop
-# for non-approved tools, which back-pressures Claude CLI's
-# stdout and effectively pauses it until the user responds.
-# Level 1 (Paranoid):  Nothing auto-approved - ask for everything
-# Level 2 (Auditor):   Read-only tools auto-approved
-# Level 3 (Manager):   Read + Write tools auto-approved
-# Level 4 (Director):  Read + Write + Execute auto-approved
-# Level 5 (God Mode):  Everything auto-approved
+# AFK level -> tools that Claude CLI is allowed to execute
+#
+# In headless mode (-p with stream-json), Claude CLI
+# auto-executes tools in --allowedTools and SKIPS tools
+# not in the list. There is no interactive prompt in
+# headless mode — tools either execute or don't.
+#
+# The AFK level controls WHICH tools Claude CLI can use:
+#   Level 1 (Paranoid):  Read only — write/execute blocked
+#   Level 2 (Auditor):   Read only — write/execute blocked
+#   Level 3 (Manager):   Read + Write — execute blocked
+#   Level 4 (Director):  Read + Write + Execute — all standard
+#   Level 5 (God Mode):  Everything + skip all permissions
+#
+# For levels 1-2, Claude can only read files. If it tries
+# to write or execute, Claude CLI will refuse and Claude
+# will report it cannot perform the action.
+#
+# The bridge monitors tool_use events in the stream and
+# notifies the user about what tools were used (post-
+# execution notification), but does NOT block execution.
 # ---------------------------------------------------------------------------
 _ALL_TOOLS = [
     "Read", "Write", "Edit",
@@ -44,7 +55,7 @@ _ALL_TOOLS = [
 ]
 
 _LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
-    1: [],
+    1: ["Read"],
     2: ["Read"],
     3: ["Read", "Write", "Edit"],
     4: ["Read", "Write", "Edit", "Bash"],
@@ -335,8 +346,6 @@ class GhostBridge:
         self._num_turns: int = 0
         self._lock = threading.Lock()
         self._query_fired_for: Optional[str] = None
-        self._approval_event = threading.Event()
-        self._approval_event.set()  # Start unblocked
 
     @property
     def state(self) -> CliState:
@@ -410,14 +419,11 @@ class GhostBridge:
             logger.warning(
                 "send() called but process not running",
             )
-            self._approval_event.set()
             return
         logger.info("Injecting: %r", text)
         ghost_status.add_log(
             f"[yellow]>>> {text}[/yellow]"
         )
-        # Unblock the read loop if it was waiting for approval
-        self._approval_event.set()
         try:
             if self._pty is not None:
                 if self._pty.isalive():
@@ -438,8 +444,6 @@ class GhostBridge:
 
     def kill(self) -> None:
         self._running = False
-        # Unblock read loop if waiting for approval
-        self._approval_event.set()
         try:
             if self._pty is not None:
                 self._pty.close(force=True)
@@ -466,12 +470,13 @@ class GhostBridge:
         """Build the command and spawn via winpty or
         subprocess depending on platform.
 
-        Only auto-approved tools (per AFK level) are
-        passed to --allowedTools. Tools that need user
-        approval are NOT passed, so Claude CLI itself
-        will pause and ask for permission before
-        executing them. The bridge then sends 'y' or 'n'
-        based on the user's Telegram/screen response.
+        Uses --allowedTools to control which tools
+        Claude CLI can execute. In headless mode (-p),
+        tools in the list auto-execute; tools NOT in
+        the list are refused by Claude CLI.
+
+        Level 5 uses --dangerously-skip-permissions
+        to bypass all permission checks.
         """
         allowed = _LEVEL_ALLOWED_TOOLS.get(
             self._afk_level, []
@@ -485,12 +490,17 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
-        # Only pass tools the AFK level auto-approves.
-        # Non-approved tools are omitted so Claude CLI
-        # blocks and asks for permission natively,
-        # preventing execution before user approval.
-        for tool in allowed:
-            cmd_parts += ["--allowedTools", tool]
+        if self._afk_level >= 5:
+            # God Mode: skip all permission checks
+            cmd_parts += [
+                "--dangerously-skip-permissions",
+            ]
+        else:
+            # Levels 1-4: only allow level-specific tools.
+            # Claude CLI will refuse tools not in this
+            # list, which enforces the AFK level.
+            for tool in allowed:
+                cmd_parts += ["--allowedTools", tool]
 
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
@@ -502,7 +512,7 @@ class GhostBridge:
         ghost_status.add_log(
             f"[bold]Headless mode:[/bold] "
             f"level {self._afk_level}, "
-            f"auto-approve: "
+            f"allowed tools: "
             f"{', '.join(allowed) or 'none'}, "
             f"budget: ${budget:.2f}"
         )
@@ -633,15 +643,43 @@ class GhostBridge:
                             ghost_status.num_turns = (
                                 self._num_turns
                             )
-                            # Tools not in --allowedTools
-                            # are blocked by Claude CLI
-                            # itself (it asks y/n before
-                            # executing). The bridge
-                            # detects those prompts via
-                            # _detect_state and forwards
-                            # them to the user.
-                            # Auto-approved tools just
-                            # get logged here.
+                            # Notify about tool usage.
+                            # In headless mode, tools in
+                            # --allowedTools auto-execute;
+                            # tools NOT in the list are
+                            # refused by Claude CLI.
+                            # We just log what happened.
+                            allowed = (
+                                _LEVEL_ALLOWED_TOOLS.get(
+                                    self._afk_level, []
+                                )
+                            )
+                            tool_allowed = any(
+                                se.tool_name.lower()
+                                == a.lower()
+                                for a in allowed
+                            ) or self._afk_level >= 5
+                            if not tool_allowed:
+                                # Tool was NOT in allowed
+                                # list — Claude CLI should
+                                # have refused it. Log it.
+                                tool = se.tool_name
+                                inp = (se.tool_input or "")
+                                desc = (
+                                    f"{tool}: {inp}"
+                                    if inp else tool
+                                )
+                                logger.info(
+                                    "Tool not in allowed "
+                                    "list: %s (level %d)",
+                                    tool,
+                                    self._afk_level,
+                                )
+                                ghost_status.add_log(
+                                    f"[yellow]⚠ Tool "
+                                    f"blocked by level: "
+                                    f"{desc[:60]}[/yellow]"
+                                )
                         if (se.num_turns
                                 and se.num_turns
                                 > self._num_turns):
@@ -705,11 +743,12 @@ class GhostBridge:
     def _detect_state(self) -> None:
         tail = self._display_buffer[-3000:]
 
-        # Claude CLI blocks and asks for permission
-        # before executing non-approved tools. This
-        # method detects those prompts and blocks the
-        # read loop until the user responds via
-        # Telegram/screen.
+        # In headless mode (-p), Claude CLI doesn't
+        # produce interactive permission prompts.
+        # Tools either auto-execute (if in allowedTools)
+        # or are refused. We detect query-like patterns
+        # in non-JSON output for edge cases and notify
+        # the user, but don't block the read loop.
 
         if (
             _QUERY_RE.search(tail)
@@ -724,11 +763,12 @@ class GhostBridge:
                 self._query_fired_for = dedup_key
                 ghost_status.state = "QUERY"
                 logger.info("State -> QUERY")
-                # Block the read loop until user responds
-                self._approval_event.clear()
                 self._on_query(tail)
-                # Wait for user response (send() will unblock)
-                self._approval_event.wait()
+                # In headless mode, auto-approve since
+                # Claude CLI can't wait for interactive
+                # input. The allowedTools whitelist is
+                # the real enforcement mechanism.
+                self.send("y")
         elif _PROMPT_RE.search(tail):
             if self._state != CliState.IDLE:
                 self._state = CliState.IDLE

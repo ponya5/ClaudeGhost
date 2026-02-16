@@ -93,12 +93,23 @@ class ClaudeGhost:
 
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
+            from src.bridge import _LEVEL_ALLOWED_TOOLS
+            allowed = _LEVEL_ALLOWED_TOOLS.get(
+                self.afk_level, []
+            )
+            tools_str = (
+                ", ".join(allowed) if allowed
+                else "Read only"
+            )
+            if self.afk_level >= 5:
+                tools_str = "ALL (skip permissions)"
             self._notify(
                 "👻 ClaudeGhost Started\n"
                 "\n"
                 f"📋 Task: {self.task}\n"
                 f"🤖 AFK Level: {self.afk_level} "
                 f"({self.config.level_name})\n"
+                f"🔧 Allowed tools: {tools_str}\n"
                 f"💰 Budget: ${self.config.budget_usd:.2f}"
             )
         elif self._screen:
@@ -139,44 +150,47 @@ class ClaudeGhost:
 
     def _run_loop(self) -> None:
         assert self._bridge is not None
-        with Live(
-            ghost_status.build_layout(),
-            console=console,
-            refresh_per_second=2,
-            transient=True,
-        ) as live:
-            while not self._shutdown.is_set():
-                if (
-                    self._bridge.state == CliState.EXITED
-                    and not self._budget_paused
-                    and not self._restarting
-                ):
-                    # Check if bridge exited while user
-                    # never answered an approval prompt
-                    with self._pending_lock:
-                        had_pending = (
-                            self._pending_query is not None
-                        )
-                        self._pending_query = None
-                    if had_pending:
-                        self._session_failed = True
-                        self._session_error_message = (
-                            "CLI exited while waiting "
-                            "for user approval"
-                        )
-                    else:
+        try:
+            with Live(
+                ghost_status.build_layout(),
+                console=console,
+                refresh_per_second=2,
+                transient=True,
+            ) as live:
+                while not self._shutdown.is_set():
+                    if (
+                        self._bridge.state
+                        == CliState.EXITED
+                        and not self._budget_paused
+                        and not self._restarting
+                    ):
                         self._session_completed = True
-                    break
-                if (
-                    self._screen
-                    and self._screen.check_pending()
-                ):
-                    live.stop()
-                    self._screen.process_pending()
-                    live.start()
-                live.update(ghost_status.build_layout())
-                self._check_budget()
-                time.sleep(0.5)
+                        break
+                    if (
+                        self._screen
+                        and self._screen.check_pending()
+                    ):
+                        live.stop()
+                        self._screen.process_pending()
+                        live.start()
+                    try:
+                        live.update(
+                            ghost_status.build_layout(),
+                        )
+                    except Exception:
+                        pass
+                    self._check_budget()
+                    time.sleep(0.5)
+        except Exception as exc:
+            logger.warning(
+                "Live display error: %s", exc,
+            )
+        finally:
+            # Reset terminal state after Live exits
+            try:
+                console.clear()
+            except Exception:
+                pass
 
     # -- Notification helpers ----------------------------------------
 
@@ -241,9 +255,6 @@ class ClaudeGhost:
                 f"[bold red]Query handler error: "
                 f"{str(exc)[:80]}[/bold red]"
             )
-            # Auto-approve to avoid hanging
-            if self._bridge:
-                self._bridge.send("y")
 
     def _handle_query_inner(self, query_text: str) -> None:
         command = extract_command_from_query(query_text)
@@ -266,27 +277,22 @@ class ClaudeGhost:
                     f"⚡ Auto-approved (God Mode): "
                     f"{command[:200]}"
                 )
-            assert self._bridge is not None
-            self._bridge.send("y")
         else:
+            # In headless mode, the bridge auto-approves
+            # any text-based prompts it detects (since
+            # --allowedTools is the real enforcement).
+            # We still notify the user about what happened.
+            ghost_status.add_log(
+                f"[yellow]Tool detected:[/yellow] "
+                f"{command[:60]}"
+            )
+            ghost_status.stats.record_auto_approve()
+            self._changelog.add_command(command)
             msg = format_approval_message(
                 command, category,
             )
-            self._request_approval(msg)
-            with self._pending_lock:
-                self._pending_query = command
-            ghost_status.state = "WAITING"
-            mode = (
-                "Telegram" if self._telegram
-                else "screen"
-            )
-            ghost_status.add_log(
-                f"[bold yellow]Waiting for {mode} "
-                f"reply...[/bold yellow]"
-            )
-            # The bridge read-loop is already blocked via
-            # _approval_event in bridge.py.  We do NOT
-            # need to block here — the bridge handles it.
+            # Notify user about the action (informational)
+            self._notify(msg)
 
     # -- Reply handling ----------------------------------------------
 
@@ -329,13 +335,10 @@ class ClaudeGhost:
             return
         first_char = reply[0].upper()
 
-        with self._pending_lock:
-            has_pending = self._pending_query is not None
-
         # ── A: Approve ──────────────────────────────────
-        if first_char == "A" and has_pending:
+        if first_char == "A":
             ghost_status.add_log(
-                "[green]User APPROVED.[/green]"
+                "[green]User acknowledged.[/green]"
             )
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
@@ -344,11 +347,10 @@ class ClaudeGhost:
                         self._pending_query,
                     )
                 self._pending_query = None
-            self._bridge.send("y")
             ghost_status.state = "RUNNING"
 
         # ── B: Block & Redo ─────────────────────────────
-        elif first_char == "B" and has_pending:
+        elif first_char == "B":
             ghost_status.add_log(
                 "[red]User BLOCKED — restarting with "
                 "alternative approach.[/red]"
@@ -432,12 +434,6 @@ class ClaudeGhost:
             )
             with self._pending_lock:
                 self._pending_query = None
-            # Send 'n' to deny any pending tool before
-            # killing, so Claude CLI doesn't execute it
-            try:
-                self._bridge.send("n")
-            except Exception:
-                pass
             self._bridge.kill()
             self._session_terminated = True
 
@@ -468,20 +464,13 @@ class ClaudeGhost:
             ghost_status.state = "EXITED"
             self._shutdown.set()
 
-        # ── No pending query ────────────────────────────
-        elif not has_pending:
-            self._notify(
-                "ℹ️ No pending approval request.\n"
-                "Send D to kill the process if needed."
-            )
-
         # ── Unknown ─────────────────────────────────────
         else:
             self._notify(
                 "❓ Unknown reply.\n"
                 "\n"
                 "Reply:\n"
-                "  A - ✅ Approve\n"
+                "  A - ✅ Acknowledge\n"
                 "  B - 🚫 Block & Redo\n"
                 "  C - 💬 Add Context\n"
                 "  D - 💀 Detonate (kill)"

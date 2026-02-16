@@ -144,14 +144,45 @@ class GhostStatus:
             return [_strip_markup(ln) for ln in self._event_lines]
 
     def build_layout(self) -> Layout:
+        try:
+            return self._build_layout_inner()
+        except Exception:
+            # Fallback: simple text if layout fails
+            layout = Layout()
+            layout.update(
+                Panel(
+                    f"State: {self.state}\n"
+                    f"Task: {self.current_task[:50]}\n"
+                    f"Budget: ${self.budget_used:.4f}"
+                    f" / ${self.budget_max:.2f}",
+                    title="ClaudeGhost",
+                    border_style="blue",
+                )
+            )
+            return layout
+
+    def _build_layout_inner(self) -> Layout:
         layout = Layout()
 
         term_h = console.height or 24
         term_w = console.width or 80
 
+        # If terminal is too small, use a simple layout
+        if term_h < 12 or term_w < 50:
+            status = (
+                f"State: {self.state} | "
+                f"Task: {self.current_task[:30]} | "
+                f"Budget: ${self.budget_used:.4f}"
+                f" / ${self.budget_max:.2f}"
+            )
+            layout.update(
+                Panel(status, title="ClaudeGhost")
+            )
+            return layout
+
         # Clamp the right column so it doesn't squeeze
         # the log panels on narrow terminals
-        right_w = min(34, max(24, term_w // 3))
+        right_w = min(34, max(22, term_w // 3))
 
         layout.split_row(
             Layout(name="left", ratio=1),
