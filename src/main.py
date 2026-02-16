@@ -93,9 +93,7 @@ class ClaudeGhost:
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
             self._notify(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  👻 ClaudeGhost Started\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "👻 ClaudeGhost Started\n"
                 "\n"
                 f"📋 Task: {self.task}\n"
                 f"🤖 AFK Level: {self.afk_level} "
@@ -217,9 +215,7 @@ class ClaudeGhost:
             if cmds else "  (none)"
         )
         msg = (
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "  ❌ SESSION ERROR\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "❌ SESSION ERROR\n"
             "\n"
             f"⚠️ {title}\n"
             f"📝 Detail: {detail[:300]}\n"
@@ -297,20 +293,24 @@ class ClaudeGhost:
         try:
             self._handle_reply_inner(body)
         except Exception as exc:
-            logger.exception(
+            logger.warning(
                 "Reply handler error: %s", exc,
             )
             ghost_status.add_log(
-                f"[bold red]Reply handler error: "
-                f"{str(exc)[:80]}[/bold red]"
-            )
-            self._notify(
-                f"⚠️ Error processing your reply: "
-                f"{str(exc)[:200]}"
+                f"[dim]Reply skipped: "
+                f"{str(exc)[:80]}[/dim]"
             )
 
     def _handle_reply_inner(self, body: str) -> None:
         if self._bridge is None and not self._budget_paused:
+            return
+        # Ignore replies if bridge already exited
+        if (
+            self._bridge is not None
+            and self._bridge.state == CliState.EXITED
+            and not self._budget_paused
+            and not self._restarting
+        ):
             return
         if self._telegram:
             ghost_status.stats.record_telegram_received()
@@ -397,9 +397,7 @@ class ClaudeGhost:
                 self._pending_context = context_inline
                 self._context_state = "awaiting_confirm"
                 self._notify(
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "  📝 CONFIRM CONTEXT\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "📝 CONFIRM CONTEXT\n"
                     "\n"
                     f"Your instruction:\n"
                     f"  \"{context_inline}\"\n"
@@ -413,9 +411,7 @@ class ClaudeGhost:
                 # Just "C" — ask for the text
                 self._context_state = "awaiting_text"
                 self._notify(
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "  💬 ADD CONTEXT\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "💬 ADD CONTEXT\n"
                     "\n"
                     "Type your instruction or context "
                     "below.\n"
@@ -455,9 +451,7 @@ class ClaudeGhost:
                 if cmds else "  (none)"
             )
             self._notify(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  💀 SESSION TERMINATED\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💀 SESSION TERMINATED\n"
                 "\n"
                 "The session was killed by your request.\n"
                 "\n"
@@ -508,9 +502,7 @@ class ClaudeGhost:
             self._pending_context = reply
             self._context_state = "awaiting_confirm"
             self._notify(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  📝 CONFIRM CONTEXT\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📝 CONFIRM CONTEXT\n"
                 "\n"
                 f"Your instruction:\n"
                 f"  \"{reply}\"\n"
@@ -699,12 +691,10 @@ class ClaudeGhost:
                 f"{pct:.0f}% used[/bold yellow]"
             )
             self._notify(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  ⚠️  BUDGET WARNING\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚠️ BUDGET WARNING\n"
                 "\n"
                 f"📊 Usage: {pct:.0f}%\n"
-                f"💰 Used: ${cost:.6f} / ${budget:.2f}\n"
+                f"💰 Used: ${cost:.4f} / ${budget:.2f}\n"
                 "\n"
                 "Session will stop at budget limit."
             )
@@ -719,11 +709,9 @@ class ClaudeGhost:
             ghost_status.state = "BUDGET_PAUSE"
             self._bridge.kill()
             self._request_approval(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  ⛔ BUDGET REACHED\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⛔ BUDGET REACHED\n"
                 "\n"
-                f"💰 Used: ${cost:.6f} / ${budget:.2f}\n"
+                f"💰 Used: ${cost:.4f} / ${budget:.2f}\n"
                 "   Execution stopped.\n"
                 "\n"
                 "Reply:\n"
@@ -889,13 +877,11 @@ class ClaudeGhost:
         changelog_path = self._changelog.save()
 
         summary = (
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"  {status_emoji} {status_text}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{status_emoji} {status_text}\n"
             "\n"
             f"📋 Task: {self._original_task}\n"
-            f"⏱️ Duration: {s.elapsed_formatted}\n"
-            f"💰 Cost: ${self._bridge.total_cost:.6f}"
+            f"⏱ Duration: {s.elapsed_formatted}\n"
+            f"💰 Cost: ${self._bridge.total_cost:.4f}"
             f" / ${self.config.budget_usd:.2f}\n"
             f"🔄 Turns: {turns}\n"
             f"📊 Queries: {s.queries_total} "
@@ -906,11 +892,7 @@ class ClaudeGhost:
         )
         if self._session_failed and self._session_error_message:
             summary += (
-                "\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "  ⚠️ Error Details\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{self._session_error_message}\n"
+                f"\n⚠️ Error: {self._session_error_message}\n"
             )
 
         # Files & commands summary
@@ -959,7 +941,7 @@ class ClaudeGhost:
             f"  Duration: {s.elapsed_formatted}"
         )
         console.print(
-            f"  Cost: ${self._bridge.total_cost:.6f}"
+            f"  Cost: ${self._bridge.total_cost:.4f}"
             f" / ${self.config.budget_usd:.2f}"
         )
         console.print(f"  Turns: {turns}")

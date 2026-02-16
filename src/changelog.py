@@ -120,7 +120,7 @@ class ChangeLog:
             bmax = sd.get('budget_max', 0)
             lines.append(
                 f"  Budget:         "
-                f"${used:.6f} / ${bmax:.2f}"
+                f"${used:.4f} / ${bmax:.2f}"
             )
             lines.append("")
             lines.append("-" * 70)

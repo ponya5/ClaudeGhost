@@ -162,7 +162,7 @@ class GhostStatus:
             Layout(name="events", ratio=1),
         )
         layout["right"].split_column(
-            Layout(name="status", size=12),
+            Layout(name="status", ratio=1),
             Layout(name="stats", ratio=1),
         )
 

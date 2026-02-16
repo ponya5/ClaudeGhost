@@ -250,7 +250,7 @@ def _parse_stream_event(line: str) -> Optional[StreamEvent]:
         if cost:
             se.display = (
                 f"[green]✓ Done[/green] — "
-                f"cost: ${float(cost):.6f}"
+                f"cost: ${float(cost):.4f}"
                 f" turns: {se.num_turns or num_turns}"
                 f" {dur_s}"
             )
@@ -406,21 +406,35 @@ class GhostBridge:
 
     def send(self, text: str) -> None:
         """Inject text into the running process."""
+        if not self._running:
+            logger.warning(
+                "send() called but process not running",
+            )
+            self._approval_event.set()
+            return
         logger.info("Injecting: %r", text)
         ghost_status.add_log(
             f"[yellow]>>> {text}[/yellow]"
         )
         # Unblock the read loop if it was waiting for approval
         self._approval_event.set()
-        if self._pty is not None:
-            self._pty.write(text + "\r\n")
-        elif (
-            self._child
-            and self._child.stdin
-            and self._child.poll() is None
-        ):
-            self._child.stdin.write(text + "\n")
-            self._child.stdin.flush()
+        try:
+            if self._pty is not None:
+                if self._pty.isalive():
+                    self._pty.write(text + "\r\n")
+                else:
+                    logger.warning(
+                        "Pty already closed, skipping",
+                    )
+            elif (
+                self._child
+                and self._child.stdin
+                and self._child.poll() is None
+            ):
+                self._child.stdin.write(text + "\n")
+                self._child.stdin.flush()
+        except Exception as exc:
+            logger.warning("send() failed: %s", exc)
 
     def kill(self) -> None:
         self._running = False
@@ -798,7 +812,7 @@ class GhostBridge:
         if best > self._total_cost:
             self._total_cost = best
             ghost_status.budget_used = best
-            logger.info("Budget update: $%.6f", best)
+            logger.info("Budget update: $%.4f", best)
 
     # ------------------------------------------------------------------
     # Heartbeat / stall detection
