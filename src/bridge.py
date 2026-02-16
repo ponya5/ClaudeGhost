@@ -49,6 +49,36 @@ _ALL_TOOLS = [
     "Bash", "WebFetch", "WebSearch",
 ]
 
+# Tools allowed (auto-approved) at each AFK level.
+# In -p (non-interactive) mode, Claude CLI won't prompt
+# for y/n — tools not in --allowedTools are REJECTED,
+# and tools in --allowedTools are AUTO-APPROVED.
+# This enforces the autonomy matrix at the CLI level.
+_LEVEL_ALLOWED_TOOLS: dict[int, list[str]] = {
+    1: [],                                   # Paranoid: nothing auto
+    2: ["Read"],                              # Auditor:  read only
+    3: ["Read", "Write", "Edit"],             # Manager:  read+write
+    4: ["Read", "Write", "Edit",              # Director: read+write+exec
+        "Bash", "WebFetch", "WebSearch"],
+    5: _ALL_TOOLS,                            # God Mode: everything
+}
+
+# Maps stream-json tool names → canonical --allowedTools names.
+# Used to check if a tool_use event was auto-approved or blocked.
+_TOOL_TO_ALLOWED: dict[str, str] = {
+    "read": "Read",
+    "readfile": "Read",
+    "write": "Write",
+    "writefile": "Write",
+    "create": "Write",
+    "edit": "Edit",
+    "editfile": "Edit",
+    "bash": "Bash",
+    "execute": "Bash",
+    "websearch": "WebSearch",
+    "webfetch": "WebFetch",
+}
+
 
 # ---------------------------------------------------------------------------
 # ANSI cleaner
@@ -313,6 +343,7 @@ class GhostBridge:
         on_event: Optional[Callable[["StreamEvent"], None]] = None,
         afk_level: int = 3,
         model: str = "sonnet",
+        extra_allowed_tools: Optional[list[str]] = None,
     ) -> None:
         self.task = task
         self._on_query = on_query
@@ -321,6 +352,10 @@ class GhostBridge:
         self._on_event = on_event
         self._afk_level = max(1, min(5, afk_level))
         self._model = model
+        self._extra_allowed_tools = (
+            list(extra_allowed_tools) if extra_allowed_tools
+            else []
+        )
 
         self._pty = None          # winpty PtyProcess
         self._child = None        # subprocess.Popen
@@ -458,9 +493,11 @@ class GhostBridge:
         subprocess depending on platform.
 
         Level 5 (God Mode) uses --dangerously-skip-permissions
-        for full autonomy.  Levels 1-4 let Claude CLI
-        prompt for each tool so the guardian can evaluate
-        and the user can approve/block BEFORE execution.
+        for full autonomy.  Levels 1-4 use --allowedTools
+        to restrict which tools Claude can use without
+        prompting.  In -p mode the CLI never shows y/n
+        prompts, so we MUST use --allowedTools to enforce
+        the autonomy matrix at the CLI level.
         """
         cmd_parts = [binary, "-p", self.task]
         cmd_parts += [
@@ -470,14 +507,57 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
+        # Tell the model to execute autonomously without
+        # asking the user for confirmation.  This prevents
+        # the model from generating misleading text like
+        # "Would you like me to proceed?" while the CLI
+        # has already auto-approved the tool.
+        cmd_parts += [
+            "--append-system-prompt",
+            "You are running in autonomous headless mode. "
+            "Execute tasks directly without asking the "
+            "user for permission or confirmation. Never "
+            "say 'Would you like me to proceed?' or ask "
+            "for approval. Just do the work immediately.",
+        ]
+
         # Level 5 (God Mode): full autonomy, skip all prompts.
-        # Levels 1-4: let Claude CLI prompt for tools so
-        # the guardian can approve/block before execution.
+        #   NOTE: --max-budget-usd is ALWAYS passed (below),
+        #   so budget limits are enforced even in God Mode.
+        #   _check_budget() in main.py also runs every loop
+        #   iteration regardless of level.
+        # Levels 1-4: use --allowedTools so only the tools
+        # approved by the autonomy matrix are permitted.
+        # Tools NOT in --allowedTools are REJECTED by the CLI.
         if self._afk_level >= 5:
             cmd_parts += [
                 "--dangerously-skip-permissions",
             ]
+        else:
+            allowed = list(
+                _LEVEL_ALLOWED_TOOLS.get(
+                    self._afk_level, []
+                )
+            )
+            # Merge any user-approved extra tools
+            for t in self._extra_allowed_tools:
+                if t not in allowed:
+                    allowed.append(t)
 
+            if allowed:
+                for tool in allowed:
+                    cmd_parts += ["--allowedTools", tool]
+            else:
+                # No tools allowed (e.g. Paranoid level 1).
+                # Explicitly block ALL tools so the CLI
+                # doesn't fall back to its default of
+                # allowing everything in -p mode.
+                for tool in _ALL_TOOLS:
+                    cmd_parts += [
+                        "--disallowedTools", tool,
+                    ]
+
+        # Budget is ALWAYS enforced, even in God Mode.
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
             cmd_parts += [
@@ -485,11 +565,25 @@ class GhostBridge:
             ]
 
         logger.info("Command: %s", cmd_parts)
-        mode_desc = (
-            "full autonomy (skip-permissions)"
-            if self._afk_level >= 5
-            else f"guardian-controlled (level {self._afk_level})"
+        effective = list(
+            _LEVEL_ALLOWED_TOOLS.get(
+                self._afk_level, []
+            )
         )
+        for t in self._extra_allowed_tools:
+            if t not in effective:
+                effective.append(t)
+        if self._afk_level >= 5:
+            mode_desc = "full autonomy (skip-permissions)"
+        else:
+            tools_str = (
+                ", ".join(effective) if effective
+                else "none"
+            )
+            mode_desc = (
+                f"level {self._afk_level}, "
+                f"allowed tools: {tools_str}"
+            )
         ghost_status.add_log(
             f"[bold]Headless mode:[/bold] "
             f"{mode_desc}, "

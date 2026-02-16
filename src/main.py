@@ -13,7 +13,10 @@ from typing import Optional
 from rich.live import Live
 from rich.prompt import Confirm
 
-from src.bridge import GhostBridge, CliState, StreamEvent
+from src.bridge import (
+    GhostBridge, CliState, StreamEvent,
+    _LEVEL_ALLOWED_TOOLS, _TOOL_TO_ALLOWED,
+)
 from src.guardian import (
     Decision,
     evaluate,
@@ -69,6 +72,12 @@ class ClaudeGhost:
         self._session_terminated = False
         self._session_error_message = ""
 
+        # Tool approval tracking: when a tool is blocked
+        # by --allowedTools, we ask the user and restart
+        # with the tool allowed if they approve.
+        self._extra_allowed_tools: list[str] = []
+        self._pending_tool_name: Optional[str] = None
+
         ghost_status.reset()
         ghost_status.current_task = config.task
         ghost_status.afk_level = config.afk_level
@@ -90,6 +99,7 @@ class ClaudeGhost:
             on_event=self._handle_event,
             afk_level=self.afk_level,
             model=self.config.model,
+            extra_allowed_tools=self._extra_allowed_tools,
         )
 
         if self._telegram:
@@ -334,13 +344,54 @@ class ClaudeGhost:
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
                 approved_cmd = self._pending_query
+                blocked_tool = self._pending_tool_name
                 self._pending_query = None
+                self._pending_tool_name = None
             if approved_cmd:
                 self._changelog.add_command(approved_cmd)
-            # Only send "y" if bridge is still alive
-            if self._bridge and self._bridge.state != CliState.EXITED:
-                self._bridge.send("y")
-            ghost_status.state = "RUNNING"
+
+            if blocked_tool:
+                # Tool was blocked by --allowedTools.
+                # Add it to extra list and restart so
+                # the CLI allows it this time.
+                self._extra_allowed_tools.append(
+                    blocked_tool
+                )
+                ghost_status.add_log(
+                    f"[green]Tool approved:[/green] "
+                    f"{blocked_tool}"
+                )
+                self._restarting = True
+                if self._bridge:
+                    self._bridge.kill()
+                self._bridge = GhostBridge(
+                    task=self.task,
+                    on_query=self._handle_query,
+                    on_idle=self._handle_idle,
+                    on_stall=self._handle_stall,
+                    on_event=self._handle_event,
+                    afk_level=self.afk_level,
+                    model=self.config.model,
+                    extra_allowed_tools=(
+                        self._extra_allowed_tools
+                    ),
+                )
+                self._bridge.start()
+                self._restarting = False
+                ghost_status.state = "RUNNING"
+                self._notify(
+                    f"✅ {blocked_tool} approved. "
+                    f"Restarting with tool enabled..."
+                )
+            else:
+                # Normal CLI y/n prompt approval
+                if (
+                    self._bridge
+                    and self._bridge.state
+                    != CliState.EXITED
+                ):
+                    self._bridge.send("y")
+                ghost_status.state = "RUNNING"
 
         # ── B: Block & Redo ─────────────────────────────
         elif first_char == "B":
@@ -377,6 +428,9 @@ class ClaudeGhost:
                 on_event=self._handle_event,
                 afk_level=self.afk_level,
                 model=self.config.model,
+                extra_allowed_tools=(
+                    self._extra_allowed_tools
+                ),
             )
             self._bridge.start()
             self._restarting = False
@@ -626,11 +680,12 @@ class ClaudeGhost:
     ) -> None:
         """Record stream events into the changelog.
 
-        For levels 1-4, tools only execute after the
-        user approved via the query flow (y/n prompt).
-        For level 5, tools execute automatically.
-        Either way, by the time we get here the tool
-        has already run — we just log it.
+        For levels 1-4, tools only execute if they are in
+        the --allowedTools list.  When a tool is NOT in
+        the list, the CLI rejects it.  We detect the
+        rejected tool_use here and ask the user via
+        Telegram whether to approve (restart with tool).
+        For level 5, all tools execute automatically.
         """
         if event.tool_name:
             name = event.tool_name.lower()
@@ -643,6 +698,50 @@ class ClaudeGhost:
                 if (path or inp)
                 else event.tool_name
             )
+
+            # ── Check if this tool was blocked ──────────
+            # At levels 1-4, tools not in the allowed
+            # list are rejected by the CLI.  Detect this
+            # and ask the user.
+            if self.afk_level < 5:
+                canonical = _TOOL_TO_ALLOWED.get(
+                    name, event.tool_name
+                )
+                allowed = set(
+                    _LEVEL_ALLOWED_TOOLS.get(
+                        self.afk_level, []
+                    )
+                )
+                allowed.update(self._extra_allowed_tools)
+                if canonical not in allowed:
+                    # Tool is blocked — ask user
+                    ghost_status.add_log(
+                        f"[yellow]⚠ Tool blocked:"
+                        f"[/yellow] {cmd_str[:60]}"
+                    )
+                    ghost_status.state = "WAITING"
+                    with self._pending_lock:
+                        self._pending_query = cmd_str
+                        self._pending_tool_name = (
+                            canonical
+                        )
+                    self._request_approval(
+                        f"⚠️ TOOL BLOCKED\n"
+                        f"\n"
+                        f"🔧 Tool: {cmd_str[:120]}\n"
+                        f"🔒 Not allowed at level "
+                        f"{self.afk_level} "
+                        f"({self.config.level_name})\n"
+                        f"\n"
+                        f"Reply:\n"
+                        f"  A - ✅ Approve & Restart\n"
+                        f"  B - 🚫 Skip (let Claude "
+                        f"adapt)\n"
+                        f"  D - 💀 Detonate (kill)"
+                    )
+                    # Don't log as executed since it
+                    # was blocked
+                    return
 
             # Record the action in the changelog
             if name in (
