@@ -65,6 +65,7 @@ class ClaudeGhost:
         # Session outcome tracking
         self._session_completed = False
         self._session_failed = False
+        self._session_terminated = False
         self._session_error_message = ""
 
         ghost_status.reset()
@@ -431,11 +432,14 @@ class ClaudeGhost:
             )
             with self._pending_lock:
                 self._pending_query = None
+            # Send 'n' to deny any pending tool before
+            # killing, so Claude CLI doesn't execute it
+            try:
+                self._bridge.send("n")
+            except Exception:
+                pass
             self._bridge.kill()
-            self._session_failed = True
-            self._session_error_message = (
-                "Terminated by user (Detonate)"
-            )
+            self._session_terminated = True
 
             # Gather outcome info for the user
             files = self._changelog.files_modified
@@ -855,7 +859,10 @@ class ClaudeGhost:
         }
 
         # Determine session status
-        if self._session_failed:
+        if self._session_terminated:
+            status_emoji = "💀"
+            status_text = "Session Terminated by User"
+        elif self._session_failed:
             status_emoji = "❌"
             status_text = "Session Completed with Error"
         elif self._session_completed:
