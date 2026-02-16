@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Tuple
 
 from src.utils import logger
+from src.version import __version__
 
-CURRENT_VERSION = "2.0.0"
+CURRENT_VERSION = __version__
 
 
 def check_for_updates() -> Tuple[bool, str]:
@@ -157,6 +158,90 @@ def _get_default_branch(cg_dir: Path) -> str:
     return "main"
 
 
+_MAJOR_FILES = {
+    "src/main.py", "src/bridge.py", "src/guardian.py",
+    "src/telegram_bot.py", "src/launcher.py",
+    "src/config.py", "src/updater.py",
+}
+
+
+def _auto_bump_version(
+    cg_dir: Path,
+    old_hash: str,
+    branch: str,
+) -> None:
+    """Bump the version in src/version.py based on
+    what files changed between old_hash and HEAD.
+
+    Major files (core logic) → bump minor version.
+    Only small/docs/tests → bump patch version.
+    """
+    try:
+        diff = subprocess.run(
+            [
+                "git", "diff", "--name-only",
+                old_hash, f"origin/{branch}",
+            ],
+            cwd=cg_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff.returncode != 0:
+            return
+
+        changed = {
+            f.strip() for f in diff.stdout.splitlines()
+            if f.strip()
+        }
+        if not changed:
+            return
+
+        # Read current version from the file on disk
+        # (which is now the NEW code after reset)
+        ver_path = cg_dir / "src" / "version.py"
+        if not ver_path.exists():
+            return
+
+        content = ver_path.read_text(encoding="utf-8")
+        import re
+        m = re.search(
+            r'__version__\s*=\s*"(\d+)\.(\d+)\.(\d+)"',
+            content,
+        )
+        if not m:
+            return
+
+        major = int(m.group(1))
+        minor = int(m.group(2))
+        patch = int(m.group(3))
+
+        # Decide bump level
+        major_hit = changed & _MAJOR_FILES
+        if major_hit:
+            minor += 1
+            patch = 0
+        else:
+            patch += 1
+
+        new_ver = f"{major}.{minor}.{patch}"
+        new_content = re.sub(
+            r'__version__\s*=\s*"[^"]+"',
+            f'__version__ = "{new_ver}"',
+            content,
+        )
+        ver_path.write_text(
+            new_content, encoding="utf-8",
+        )
+        logger.debug(
+            "Version bumped to %s", new_ver,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Version bump failed: %s", exc,
+        )
+
+
 def auto_update() -> bool:
     """Check for updates and apply them automatically with a spinner.
 
@@ -214,7 +299,10 @@ def auto_update() -> bool:
         if local.returncode != 0 or remote.returncode != 0:
             return False
 
-        if local.stdout.strip() == remote.stdout.strip():
+        local_hash = local.stdout.strip()
+        remote_hash = remote.stdout.strip()
+
+        if local_hash == remote_hash:
             console.print(
                 f"[green]✓[/green] ClaudeGhost "
                 f"v{CURRENT_VERSION} — up to date"
@@ -245,8 +333,9 @@ def auto_update() -> bool:
         )
 
         # Use reset --hard instead of pull to avoid
-        # conflicts with local changes.  User config
-        # (.env, session_logs/) is gitignored and safe.
+        # conflicts with local changes or diverged
+        # branches.  User config (.env, session_logs/)
+        # is gitignored and safe.
         reset = subprocess.run(
             [
                 "git", "reset", "--hard",
@@ -259,27 +348,22 @@ def auto_update() -> bool:
             timeout=60,
         )
         if reset.returncode != 0:
-            # Fallback: try a normal pull
-            pull = subprocess.run(
-                ["git", "pull", "origin", branch],
-                cwd=cg_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
+            err = (
+                reset.stderr.strip()
+                or reset.stdout.strip()
             )
-            if pull.returncode != 0:
-                console.print(
-                    "[red]✗ Update failed "
-                    "(git pull error). "
-                    "Try: git pull origin "
-                    "main[/red]"
-                )
-                logger.debug(
-                    "git pull stderr: %s",
-                    pull.stderr,
-                )
-                return False
+            console.print(
+                f"[red]✗ Update failed: {err}[/red]\n"
+                f"[dim]Try manually: git reset "
+                f"--hard origin/{branch}[/dim]"
+            )
+            logger.debug("git reset stderr: %s", err)
+            return False
+
+        # Auto-bump version based on what changed
+        _auto_bump_version(
+            cg_dir, local_hash, branch,
+        )
 
         console.print("[dim]Installing dependencies...[/dim]")
         subprocess.run(

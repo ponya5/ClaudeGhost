@@ -17,6 +17,7 @@ from src.config import (
     LEVEL_DESCRIPTIONS,
     MODEL_OPTIONS,
 )
+from src.version import __version__
 
 console = Console()
 
@@ -50,7 +51,7 @@ def print_banner() -> None:
     banner.append("\n\n")
     banner.append(" Headless Supervisor for Claude Code", style="dim")
     banner.append("\n")
-    banner.append(" v2.0 - Telegram Edition", style="dim")
+    banner.append(f" v{__version__} - Telegram Edition", style="dim")
     banner.append("\n\n")
     banner.append(" Created by Daniel Shalom", style="bold white")
     banner.append("\n")

@@ -26,6 +26,7 @@ from src.utils import logger, ghost_status, console
 from src.launcher import run_interactive_launcher, run_quick_launcher
 from src.changelog import ChangeLog
 from src.updater import auto_update
+from src.version import __version__
 
 
 class ClaudeGhost:
@@ -966,7 +967,8 @@ def main() -> None:
                 model=args.model,
             )
             console.print(
-                "[bold blue]ClaudeGhost v2.0[/bold blue]"
+                f"[bold blue]ClaudeGhost "
+                f"v{__version__}[/bold blue]"
             )
             console.print(f"  Task  : {config.task[:60]}")
             console.print(f"  Model : {config.model}")

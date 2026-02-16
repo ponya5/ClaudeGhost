@@ -3,6 +3,12 @@
 from pathlib import Path
 from setuptools import setup, find_packages
 
+# Read version from single source of truth
+_ver_path = Path(__file__).parent / "src" / "version.py"
+_ver_ns: dict = {}
+exec(_ver_path.read_text(encoding="utf-8"), _ver_ns)
+_version = _ver_ns["__version__"]
+
 this_directory = Path(__file__).parent
 long_description = ""
 readme_path = this_directory / "README.md"
@@ -11,7 +17,7 @@ if readme_path.exists():
 
 setup(
     name="claudeghost",
-    version="2.0.0",
+    version=_version,
     description="Headless Supervisor for the Anthropic Claude CLI with Telegram notifications",
     long_description=long_description,
     long_description_content_type="text/markdown",
