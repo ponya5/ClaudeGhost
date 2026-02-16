@@ -29,21 +29,20 @@ if sys.platform == "win32":
 # ---------------------------------------------------------------------------
 # AFK level -> autonomy level (user involvement)
 #
-# ALL levels use --dangerously-skip-permissions so that
-# Claude CLI can actually execute tools.  The AFK level
-# controls how much the USER is involved:
+# Level 5 (God Mode) uses --dangerously-skip-permissions
+# so Claude CLI executes all tools without prompting.
+#
+# Levels 1-4 do NOT use --dangerously-skip-permissions.
+# Claude CLI will prompt for each tool.  The guardian in
+# main.py evaluates each prompt and either auto-approves
+# (sends "y") or asks the user via Telegram/screen and
+# waits for their reply before sending "y" or "n".
 #
 #   Level 1 (Paranoid):  User asked for EVERY action
 #   Level 2 (Auditor):   Auto: read — ask user: rest
 #   Level 3 (Manager):   Auto: read+write — ask: rest
 #   Level 4 (Director):  Auto: read+write+exec — ask: high-risk
 #   Level 5 (God Mode):  Fully autonomous
-#
-# The guardian in main.py evaluates each tool event and
-# decides whether to auto-approve or notify/ask the user.
-# Since we run in headless mode, tools execute first and
-# the user is notified.  If the user disagrees they can
-# Block & Redo (B) to restart with a different approach.
 # ---------------------------------------------------------------------------
 _ALL_TOOLS = [
     "Read", "Write", "Edit",
@@ -458,12 +457,10 @@ class GhostBridge:
         """Build the command and spawn via winpty or
         subprocess depending on platform.
 
-        ALL levels use --dangerously-skip-permissions
-        so Claude CLI can execute any tool.  The AFK
-        level controls user involvement (notification
-        and approval), not which tools are available.
-        The guardian in main.py handles the autonomy
-        logic.
+        Level 5 (God Mode) uses --dangerously-skip-permissions
+        for full autonomy.  Levels 1-4 let Claude CLI
+        prompt for each tool so the guardian can evaluate
+        and the user can approve/block BEFORE execution.
         """
         cmd_parts = [binary, "-p", self.task]
         cmd_parts += [
@@ -473,11 +470,13 @@ class GhostBridge:
         if self._model:
             cmd_parts += ["--model", self._model]
 
-        # All levels get full tool access — the guardian
-        # handles user involvement based on AFK level.
-        cmd_parts += [
-            "--dangerously-skip-permissions",
-        ]
+        # Level 5 (God Mode): full autonomy, skip all prompts.
+        # Levels 1-4: let Claude CLI prompt for tools so
+        # the guardian can approve/block before execution.
+        if self._afk_level >= 5:
+            cmd_parts += [
+                "--dangerously-skip-permissions",
+            ]
 
         budget = settings.max_budget_usd
         if budget and 0 < budget < 999:
@@ -486,10 +485,14 @@ class GhostBridge:
             ]
 
         logger.info("Command: %s", cmd_parts)
+        mode_desc = (
+            "full autonomy (skip-permissions)"
+            if self._afk_level >= 5
+            else f"guardian-controlled (level {self._afk_level})"
+        )
         ghost_status.add_log(
             f"[bold]Headless mode:[/bold] "
-            f"level {self._afk_level}, "
-            f"all tools enabled, "
+            f"{mode_desc}, "
             f"budget: ${budget:.2f}"
         )
         ghost_status.add_event(
@@ -701,10 +704,13 @@ class GhostBridge:
                 ghost_status.state = "QUERY"
                 logger.info("State -> QUERY")
                 self._on_query(tail)
-                # Auto-approve any text prompts since
-                # --dangerously-skip-permissions should
-                # handle everything. This is a fallback.
-                self.send("y")
+                # Level 5 uses --dangerously-skip-permissions
+                # so queries shouldn't appear, but if they
+                # do, auto-approve.  Levels 1-4 are handled
+                # by the guardian in main.py which will call
+                # bridge.send("y") or bridge.send("n").
+                if self._afk_level >= 5:
+                    self.send("y")
         elif _PROMPT_RE.search(tail):
             if self._state != CliState.IDLE:
                 self._state = CliState.IDLE

@@ -147,7 +147,7 @@ class ClaudeGhost:
                 ghost_status.build_layout(),
                 console=console,
                 refresh_per_second=2,
-                transient=True,
+                transient=False,
             ) as live:
                 while not self._shutdown.is_set():
                     if (
@@ -177,12 +177,6 @@ class ClaudeGhost:
             logger.warning(
                 "Live display error: %s", exc,
             )
-        finally:
-            # Reset terminal state after Live exits
-            try:
-                console.clear()
-            except Exception:
-                pass
 
     # -- Notification helpers ----------------------------------------
 
@@ -264,21 +258,24 @@ class ClaudeGhost:
             )
             ghost_status.stats.record_auto_approve()
             self._changelog.add_command(command)
+            # Send "y" to the CLI to approve the tool
+            if self._bridge:
+                self._bridge.send("y")
         else:
-            # ASK_USER: notify via Telegram/screen.
-            # The tool already executed (headless mode),
-            # but the user can Block & Redo (B) if they
-            # disagree with the action.
+            # ASK_USER: notify via Telegram/screen and
+            # WAIT for the user to approve or block
+            # BEFORE sending "y" or "n" to the CLI.
             ghost_status.add_log(
-                f"[yellow]⚠ User attention:[/yellow] "
-                f"{command[:60]}"
+                f"[yellow]⚠ Waiting for user:[/yellow]"
+                f" {command[:60]}"
             )
-            ghost_status.stats.record_auto_approve()
-            self._changelog.add_command(command)
+            ghost_status.state = "WAITING"
+            with self._pending_lock:
+                self._pending_query = command
             msg = format_approval_message(
                 command, category,
             )
-            self._notify(msg)
+            self._request_approval(msg)
 
     # -- Reply handling ----------------------------------------------
 
@@ -324,15 +321,17 @@ class ClaudeGhost:
         # ── A: Approve ──────────────────────────────────
         if first_char == "A":
             ghost_status.add_log(
-                "[green]User acknowledged.[/green]"
+                "[green]User APPROVED action.[/green]"
             )
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
-                if self._pending_query:
-                    self._changelog.add_command(
-                        self._pending_query,
-                    )
+                approved_cmd = self._pending_query
                 self._pending_query = None
+            if approved_cmd:
+                self._changelog.add_command(approved_cmd)
+            # Send "y" to the CLI to approve the tool
+            if self._bridge:
+                self._bridge.send("y")
             ghost_status.state = "RUNNING"
 
         # ── B: Block & Redo ─────────────────────────────
@@ -347,7 +346,11 @@ class ClaudeGhost:
             )
             ghost_status.stats.record_blocked()
             self._restarting = True
-            self._bridge.kill()
+            # Send "n" to reject the tool, then kill
+            if self._bridge:
+                self._bridge.send("n")
+                time.sleep(0.3)
+                self._bridge.kill()
             with self._pending_lock:
                 self._pending_query = None
 
@@ -613,35 +616,24 @@ class ClaudeGhost:
     def _handle_event_inner(
         self, event: StreamEvent,
     ) -> None:
-        """Record stream events and apply guardian logic.
+        """Record stream events into the changelog.
 
-        The guardian evaluates each tool against the AFK
-        level to decide: auto-approve (silent) or notify
-        the user.  Since we run in headless mode, tools
-        execute first — the user can Block & Redo (B) if
-        they disagree.
-
-        Level 1: user notified of EVERY action
-        Level 2: auto reads, notify writes/executes
-        Level 3: auto reads+writes, notify executes
-        Level 4: auto reads+writes+executes, notify high-risk
-        Level 5: auto everything (notify only on errors)
+        For levels 1-4, tools only execute after the
+        user approved via the query flow (y/n prompt).
+        For level 5, tools execute automatically.
+        Either way, by the time we get here the tool
+        has already run — we just log it.
         """
         if event.tool_name:
             name = event.tool_name.lower()
 
-            # Build a command string for the guardian
+            # Build a command string for logging
             path = event.file_path or ""
             inp = event.tool_input or ""
             cmd_str = (
                 f"{event.tool_name}: {path or inp}"
                 if (path or inp)
                 else event.tool_name
-            )
-
-            # Guardian decides based on AFK level
-            decision, category = evaluate(
-                cmd_str, self.afk_level,
             )
 
             # Record the action in the changelog
@@ -677,24 +669,10 @@ class ClaudeGhost:
                     f"{event.tool_name}: {desc[:200]}"
                 )
 
-            # Notify user based on guardian decision
-            if decision == Decision.AUTO_APPROVE:
-                ghost_status.add_log(
-                    f"[green]Auto-approved:[/green] "
-                    f"{cmd_str[:60]}"
-                )
-                ghost_status.stats.record_auto_approve()
-            else:
-                # ASK_USER: notify via Telegram/screen
-                ghost_status.add_log(
-                    f"[yellow]⚠ User attention:[/yellow]"
-                    f" {cmd_str[:60]}"
-                )
-                ghost_status.stats.record_auto_approve()
-                msg = format_approval_message(
-                    cmd_str, category,
-                )
-                self._notify(msg)
+            ghost_status.add_log(
+                f"[dim]Tool executed:[/dim] "
+                f"{cmd_str[:60]}"
+            )
 
         if event.result_text:
             self._changelog.add_change(
