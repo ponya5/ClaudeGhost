@@ -53,15 +53,18 @@ class ClaudeGhost:
         self._budget_paused = False
         self._shutdown = threading.Event()
         self._changelog = ChangeLog(config.task, self.session_id)
-        # Context flow state: None, "awaiting_text", "awaiting_confirm"
+
+        # Context flow: None | "awaiting_text" | "awaiting_confirm"
         self._context_state: Optional[str] = None
         self._pending_context: Optional[str] = None
-        # Flag to prevent _run_loop from exiting during bridge restart
+        # Prevent _run_loop exit during bridge restart
         self._restarting = False
-
-        # Store the original task separately so context flow
-        # always builds from the clean original, not accumulated text
         self._original_task = config.task
+
+        # Session outcome tracking
+        self._session_completed = False
+        self._session_failed = False
+        self._session_error_message = ""
 
         ghost_status.reset()
         ghost_status.current_task = config.task
@@ -89,13 +92,14 @@ class ClaudeGhost:
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
             self._notify(
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"  👻 ClaudeGhost Started\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  👻 ClaudeGhost Started\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
                 f"📋 Task: {self.task}\n"
-                f"🤖 AFK Level: {self.afk_level} ({self.config.level_name})\n"
-                f"💰 Budget (Limit/Quota): ${self.config.budget_usd:.2f}"
+                f"🤖 AFK Level: {self.afk_level} "
+                f"({self.config.level_name})\n"
+                f"💰 Budget: ${self.config.budget_usd:.2f}"
             )
         elif self._screen:
             self._screen.set_callback(self._handle_reply)
@@ -113,6 +117,14 @@ class ClaudeGhost:
 
         try:
             self._run_loop()
+        except Exception as exc:
+            logger.exception("Session error: %s", exc)
+            self._session_failed = True
+            self._session_error_message = str(exc)
+            self._notify_error(
+                "Unexpected error during session",
+                str(exc),
+            )
         finally:
             signal.signal(signal.SIGINT, original_sigint)
 
@@ -134,16 +146,31 @@ class ClaudeGhost:
             transient=True,
         ) as live:
             while not self._shutdown.is_set():
-                # Keep looping while budget-paused or restarting
-                # (waiting for user to top-up/stop or bridge
-                # being replaced) even if bridge exited
                 if (
                     self._bridge.state == CliState.EXITED
                     and not self._budget_paused
                     and not self._restarting
                 ):
+                    # Check if bridge exited while user
+                    # never answered an approval prompt
+                    with self._pending_lock:
+                        had_pending = (
+                            self._pending_query is not None
+                        )
+                        self._pending_query = None
+                    if had_pending:
+                        self._session_failed = True
+                        self._session_error_message = (
+                            "CLI exited while waiting "
+                            "for user approval"
+                        )
+                    else:
+                        self._session_completed = True
                     break
-                if self._screen and self._screen.check_pending():
+                if (
+                    self._screen
+                    and self._screen.check_pending()
+                ):
                     live.stop()
                     self._screen.process_pending()
                     live.start()
@@ -151,53 +178,104 @@ class ClaudeGhost:
                 self._check_budget()
                 time.sleep(0.5)
 
-    # -- Notification helpers ------------------------------------------------
+    # -- Notification helpers ----------------------------------------
 
     def _notify(self, message: str) -> None:
-        if self._telegram:
-            self._telegram.send(message)
-            ghost_status.stats.record_telegram_sent()
-        elif self._screen:
-            self._screen.send_info(message)
+        try:
+            if self._telegram:
+                self._telegram.send(message)
+                ghost_status.stats.record_telegram_sent()
+            elif self._screen:
+                self._screen.send_info(message)
+        except Exception as exc:
+            logger.error("Notification failed: %s", exc)
 
     def _request_approval(self, message: str) -> None:
-        if self._telegram:
-            self._telegram.send(message)
-            ghost_status.stats.record_telegram_sent()
-        elif self._screen:
-            self._screen.request_approval(message)
+        try:
+            if self._telegram:
+                self._telegram.send(message)
+                ghost_status.stats.record_telegram_sent()
+            elif self._screen:
+                self._screen.request_approval(message)
+        except Exception as exc:
+            logger.error("Approval request failed: %s", exc)
 
-    # -- Query handling ------------------------------------------------------
+    def _notify_error(
+        self, title: str, detail: str,
+    ) -> None:
+        """Send an informative error message via Telegram."""
+        # Gather what we know about changes so far
+        files = self._changelog.files_modified
+        cmds = self._changelog.commands_executed
+        files_str = (
+            "\n".join(f"  • {f}" for f in files[-5:])
+            if files else "  (none)"
+        )
+        cmds_str = (
+            "\n".join(f"  • {c[:80]}" for c in cmds[-5:])
+            if cmds else "  (none)"
+        )
+        msg = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "  ❌ SESSION ERROR\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            f"⚠️ {title}\n"
+            f"📝 Detail: {detail[:300]}\n"
+            "\n"
+            f"📂 Files modified so far:\n{files_str}\n"
+            f"⚡ Commands executed:\n{cmds_str}\n"
+            "\n"
+            "The session has been terminated."
+        )
+        self._notify(msg)
+
+    # -- Query handling ----------------------------------------------
 
     def _handle_query(self, query_text: str) -> None:
         command = extract_command_from_query(query_text)
         if not command:
             command = self._fallback_command(query_text)
 
-        decision, category = evaluate(command, self.afk_level)
+        decision, category = evaluate(
+            command, self.afk_level,
+        )
 
         if decision == Decision.AUTO_APPROVE:
             ghost_status.add_log(
-                f"[green]Auto-approved:[/green] {command[:60]}"
+                f"[green]Auto-approved:[/green] "
+                f"{command[:60]}"
             )
             ghost_status.stats.record_auto_approve()
             self._changelog.add_command(command)
             if self.afk_level == 5:
-                self._notify(f"⚡ Auto-approved (God Mode): {command[:200]}")
+                self._notify(
+                    f"⚡ Auto-approved (God Mode): "
+                    f"{command[:200]}"
+                )
             assert self._bridge is not None
             self._bridge.send("y")
         else:
-            msg = format_approval_message(command, category)
+            msg = format_approval_message(
+                command, category,
+            )
             self._request_approval(msg)
             with self._pending_lock:
                 self._pending_query = command
             ghost_status.state = "WAITING"
-            mode = "Telegram" if self._telegram else "screen"
-            ghost_status.add_log(
-                f"[bold yellow]Waiting for {mode} reply...[/bold yellow]"
+            mode = (
+                "Telegram" if self._telegram
+                else "screen"
             )
+            ghost_status.add_log(
+                f"[bold yellow]Waiting for {mode} "
+                f"reply...[/bold yellow]"
+            )
+            # The bridge read-loop is already blocked via
+            # _approval_event in bridge.py.  We do NOT
+            # need to block here — the bridge handles it.
 
-    # -- Reply handling ------------------------------------------------------
+    # -- Reply handling ----------------------------------------------
 
     def _handle_reply(self, body: str) -> None:
         if self._bridge is None and not self._budget_paused:
@@ -214,26 +292,38 @@ class ClaudeGhost:
             return
 
         reply = body.strip()
-        first_char = reply[0].upper() if reply else ""
+        if not reply:
+            return
+        first_char = reply[0].upper()
 
         with self._pending_lock:
             has_pending = self._pending_query is not None
 
-        if first_char == "A":
-            # Approve: continue with the agent's proposed action
-            ghost_status.add_log("[green]User APPROVED.[/green]")
+        # ── A: Approve ──────────────────────────────────
+        if first_char == "A" and has_pending:
+            ghost_status.add_log(
+                "[green]User APPROVED.[/green]"
+            )
             ghost_status.stats.record_user_approve()
             with self._pending_lock:
                 if self._pending_query:
-                    self._changelog.add_command(self._pending_query)
+                    self._changelog.add_command(
+                        self._pending_query,
+                    )
                 self._pending_query = None
             self._bridge.send("y")
             ghost_status.state = "RUNNING"
 
-        elif first_char == "B":
-            # Block: kill and restart, asking for alternative
-            ghost_status.add_log("[red]User BLOCKED - requesting alternative.[/red]")
-            ghost_status.add_event("[bold red]🚫 User blocked action — restarting[/bold red]")
+        # ── B: Block & Redo ─────────────────────────────
+        elif first_char == "B" and has_pending:
+            ghost_status.add_log(
+                "[red]User BLOCKED — restarting with "
+                "alternative approach.[/red]"
+            )
+            ghost_status.add_event(
+                "[bold red]🚫 User blocked action — "
+                "restarting[/bold red]"
+            )
             ghost_status.stats.record_blocked()
             self._restarting = True
             self._bridge.kill()
@@ -241,9 +331,11 @@ class ClaudeGhost:
                 self._pending_query = None
 
             new_task = (
-                f"{self.task}\n\n"
-                f"IMPORTANT: The user blocked the last action. "
-                f"Please try a different approach."
+                f"{self.task} --- "
+                f"IMPORTANT: The user blocked the last "
+                f"action. Try a completely different "
+                f"approach. Do NOT repeat the same "
+                f"command or tool."
             )
             self._bridge = GhostBridge(
                 task=new_task,
@@ -257,43 +349,102 @@ class ClaudeGhost:
             self._bridge.start()
             self._restarting = False
             ghost_status.state = "RUNNING"
+            self._notify(
+                "🔄 Blocked. Restarting with a "
+                "different approach..."
+            )
 
+        # ── C: Add Context ──────────────────────────────
         elif first_char == "C":
-            # Context: start multi-step context flow
-            context_inline = reply[1:].strip() if len(reply) > 1 else ""
+            context_inline = (
+                reply[1:].strip() if len(reply) > 1
+                else ""
+            )
             if context_inline:
-                # User provided context inline: C <text>
-                # Go straight to confirmation
+                # User provided context inline: "C <text>"
                 self._pending_context = context_inline
                 self._context_state = "awaiting_confirm"
                 self._notify(
-                    f"📝 Your context change:\n"
-                    f"   {context_inline}\n"
-                    f"\n"
-                    f"Reply:\n"
-                    f"  Y - ✅ Accept & Apply\n"
-                    f"  N - ❌ Cancel\n"
-                    f"  M - ✏️ Modify"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "  📝 CONFIRM CONTEXT\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "\n"
+                    f"Your instruction:\n"
+                    f"  \"{context_inline}\"\n"
+                    "\n"
+                    "Reply:\n"
+                    "  Y - ✅ Accept & Apply\n"
+                    "  N - ❌ Cancel\n"
+                    "  M - ✏️ Modify"
                 )
             else:
-                # User just pressed C, ask for context text
+                # Just "C" — ask for the text
                 self._context_state = "awaiting_text"
                 self._notify(
-                    "💬 Type your context / instruction below:"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "  💬 ADD CONTEXT\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "\n"
+                    "Type your instruction or context "
+                    "below.\n"
+                    "This will override the current task."
                 )
 
+        # ── D: Detonate (kill) ──────────────────────────
         elif first_char == "D":
-            # Detonate: Kill the session immediately
             ghost_status.add_log(
-                "[bold red]DETONATE - session terminated by user.[/bold red]"
+                "[bold red]DETONATE — session terminated "
+                "by user.[/bold red]"
             )
-            self._notify("🛑 Session terminated by user.")
-            self._bridge.kill()
+            ghost_status.add_event(
+                "[bold red]💀 Session terminated by "
+                "user (Detonate)[/bold red]"
+            )
             with self._pending_lock:
                 self._pending_query = None
+            self._bridge.kill()
+            self._session_failed = True
+            self._session_error_message = (
+                "Terminated by user (Detonate)"
+            )
+
+            # Gather outcome info for the user
+            files = self._changelog.files_modified
+            cmds = self._changelog.commands_executed
+            files_str = (
+                "\n".join(f"  • {f}" for f in files[-5:])
+                if files else "  (none)"
+            )
+            cmds_str = (
+                "\n".join(
+                    f"  • {c[:80]}" for c in cmds[-5:]
+                )
+                if cmds else "  (none)"
+            )
+            self._notify(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  💀 SESSION TERMINATED\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
+                "The session was killed by your request.\n"
+                "\n"
+                f"📂 Files modified:\n{files_str}\n"
+                f"⚡ Commands executed:\n{cmds_str}\n"
+                "\n"
+                "⚠️ Some changes may be incomplete.\n"
+                "Review your working directory."
+            )
             ghost_status.state = "EXITED"
             self._shutdown.set()
 
+        # ── No pending query ────────────────────────────
+        elif not has_pending:
+            self._notify(
+                "ℹ️ No pending approval request.\n"
+                "Send D to kill the process if needed."
+            )
+
+        # ── Unknown ─────────────────────────────────────
         else:
             self._notify(
                 "❓ Unknown reply.\n"
@@ -308,7 +459,7 @@ class ClaudeGhost:
     def _handle_context_reply(self, body: str) -> bool:
         """Handle replies during the multi-step context flow.
 
-        Returns True if the reply was consumed, False otherwise.
+        Returns True if the reply was consumed.
         """
         if self._context_state is None:
             return False
@@ -316,22 +467,25 @@ class ClaudeGhost:
         reply = body.strip()
 
         if self._context_state == "awaiting_text":
-            # User is typing their context text
             if not reply:
                 self._notify(
-                    "💬 Type your context / instruction below:"
+                    "💬 Type your instruction below:"
                 )
                 return True
             self._pending_context = reply
             self._context_state = "awaiting_confirm"
             self._notify(
-                f"📝 Your context change:\n"
-                f"   {reply}\n"
-                f"\n"
-                f"Reply:\n"
-                f"  Y - ✅ Accept & Apply\n"
-                f"  N - ❌ Cancel\n"
-                f"  M - ✏️ Modify"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  📝 CONFIRM CONTEXT\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
+                f"Your instruction:\n"
+                f"  \"{reply}\"\n"
+                "\n"
+                "Reply:\n"
+                "  Y - ✅ Accept & Apply\n"
+                "  N - ❌ Cancel\n"
+                "  M - ✏️ Modify"
             )
             return True
 
@@ -339,35 +493,37 @@ class ClaudeGhost:
             first = reply[0].upper() if reply else ""
 
             if first == "Y":
-                # Accept: restart with context applied to ORIGINAL task
                 context = self._pending_context or ""
                 self._context_state = None
                 self._pending_context = None
 
                 ghost_status.add_log(
-                    f"[cyan]Context accepted:[/cyan] {context[:60]}"
+                    f"[cyan]Context accepted:[/cyan] "
+                    f"{context[:60]}"
                 )
                 ghost_status.add_event(
-                    f"[bold cyan]🔄 User context applied:[/bold cyan] {context[:100]}"
+                    f"[bold cyan]🔄 User context "
+                    f"applied:[/bold cyan] "
+                    f"{context[:100]}"
                 )
                 self._restarting = True
                 self._bridge.kill()
                 with self._pending_lock:
                     self._pending_query = None
 
-                # Build a single-line task that works with cmd.exe
-                # (newlines in -p args break Windows command parsing)
                 new_task = (
-                    f"OVERRIDE: The user changed the instructions. "
-                    f"Original task was: {self._original_task} --- "
-                    f"NEW USER INSTRUCTION: {context} --- "
-                    f"You MUST follow the NEW USER INSTRUCTION. "
-                    f"It takes priority over the original task."
+                    f"OVERRIDE: The user changed the "
+                    f"instructions. Original task was: "
+                    f"{self._original_task} --- "
+                    f"NEW USER INSTRUCTION: {context} "
+                    f"--- You MUST follow the NEW USER "
+                    f"INSTRUCTION. It takes priority "
+                    f"over the original task."
                 )
                 self.task = new_task
                 self._notify(
                     f"🔄 Restarting with your context:\n"
-                    f"   {context[:200]}"
+                    f"  \"{context[:200]}\""
                 )
                 self._bridge = GhostBridge(
                     task=new_task,
@@ -384,11 +540,10 @@ class ClaudeGhost:
                 return True
 
             elif first == "N":
-                # Cancel: go back to waiting for action reply
                 self._context_state = None
                 self._pending_context = None
                 self._notify(
-                    "❌ Context cancelled. Still waiting for your reply.\n"
+                    "❌ Context cancelled.\n"
                     "\n"
                     "Reply:\n"
                     "  A - ✅ Approve\n"
@@ -399,53 +554,71 @@ class ClaudeGhost:
                 return True
 
             elif first == "M":
-                # Modify: go back to text input
                 self._context_state = "awaiting_text"
                 self._pending_context = None
                 self._notify(
-                    "✏️ Type your updated context / instruction:"
+                    "✏️ Type your updated instruction:"
                 )
                 return True
 
             else:
                 self._notify(
                     "❓ Reply with:\n"
-                    "  Y - Accept & Apply\n"
-                    "  N - Cancel\n"
-                    "  M - Modify"
+                    "  Y - ✅ Accept & Apply\n"
+                    "  N - ❌ Cancel\n"
+                    "  M - ✏️ Modify"
                 )
                 return True
 
         return False
 
-    # -- Other callbacks -----------------------------------------------------
+    # -- Other callbacks ---------------------------------------------
 
     def _handle_idle(self) -> None:
         ghost_status.add_log("[dim]CLI is idle.[/dim]")
 
     def _handle_stall(self) -> None:
-        self._notify(
-            f"⏳ Stall detected\n"
-            f"No output for {settings.heartbeat_timeout_seconds:.0f}s.\n"
-            f"The process may be hanging."
-        )
+        with self._pending_lock:
+            has_pending = self._pending_query is not None
+        if has_pending:
+            self._notify(
+                f"⏳ Stall detected — no output for "
+                f"{settings.heartbeat_timeout_seconds:.0f}"
+                f"s.\nStill waiting for your approval.\n"
+                f"Send A, B, C, or D."
+            )
+        else:
+            self._notify(
+                f"⏳ Stall detected\n"
+                f"No output for "
+                f"{settings.heartbeat_timeout_seconds:.0f}"
+                f"s.\nThe process may be hanging."
+            )
 
     def _handle_event(self, event: StreamEvent) -> None:
         """Record stream events into the changelog."""
         if event.tool_name:
             name = event.tool_name.lower()
-            if name in ("write", "edit", "editfile",
-                        "writefile", "create"):
+            if name in (
+                "write", "edit", "editfile",
+                "writefile", "create",
+            ):
                 if event.file_path:
-                    self._changelog.add_file_change(event.file_path)
+                    self._changelog.add_file_change(
+                        event.file_path,
+                    )
                     self._changelog.add_change(
-                        f"{event.tool_name}: {event.file_path}"
+                        f"{event.tool_name}: "
+                        f"{event.file_path}"
                     )
             elif name in ("bash", "execute"):
                 if event.tool_input:
-                    self._changelog.add_command(event.tool_input)
+                    self._changelog.add_command(
+                        event.tool_input,
+                    )
                     self._changelog.add_change(
-                        f"Executed: {event.tool_input[:200]}"
+                        f"Executed: "
+                        f"{event.tool_input[:200]}"
                     )
             elif name in ("read", "readfile"):
                 if event.file_path:
@@ -473,7 +646,6 @@ class ClaudeGhost:
 
         pct = (cost / budget) * 100
 
-        # Early warning at 80%
         if pct >= 80 and not self._budget_warning_sent:
             self._budget_warning_sent = True
             ghost_status.add_log(
@@ -481,63 +653,58 @@ class ClaudeGhost:
                 f"{pct:.0f}% used[/bold yellow]"
             )
             self._notify(
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"  ⚠️  BUDGET WARNING\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  ⚠️  BUDGET WARNING\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
                 f"📊 Usage: {pct:.0f}%\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
-                f"\n"
-                f"Session will stop when budget is reached."
+                "\n"
+                "Session will stop at budget limit."
             )
 
-        # Budget exceeded — stop and ask user
         if cost >= budget and not self._budget_warned:
             self._budget_warned = True
             self._budget_paused = True
             ghost_status.add_log(
-                "[bold red]BUDGET EXCEEDED — paused[/bold red]"
+                "[bold red]BUDGET EXCEEDED — "
+                "paused[/bold red]"
             )
             ghost_status.state = "BUDGET_PAUSE"
-
-            # Kill the running process to stop spending
             self._bridge.kill()
-
             self._request_approval(
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"  ⛔ BUDGET REACHED\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  ⛔ BUDGET REACHED\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
                 f"💰 Used: ${cost:.2f} / ${budget:.2f}\n"
-                f"   Execution stopped.\n"
-                f"\n"
-                f"Reply:\n"
-                f"  T <amount> - 💵 Top-up\n"
-                f"  S - 🛑 Stop session"
+                "   Execution stopped.\n"
+                "\n"
+                "Reply:\n"
+                "  T <amount> - 💵 Top-up\n"
+                "  S - 🛑 Stop session"
             )
 
     def _handle_budget_reply(self, reply: str) -> bool:
-        """Handle a reply while in budget-paused state.
-
-        Returns True if the reply was consumed, False otherwise.
-        """
+        """Handle a reply while in budget-paused state."""
         if not self._budget_paused:
             return False
 
         upper = reply.strip().upper()
 
-        # --- Stop / terminate ---
         if upper.startswith("S") or upper.startswith("D"):
             self._budget_paused = False
             ghost_status.add_log(
-                "[red]User chose to stop after budget limit.[/red]"
+                "[red]User stopped after budget "
+                "limit.[/red]"
             )
             ghost_status.state = "EXITED"
-            self._notify("🛑 Session ended by user (budget limit).")
+            self._notify(
+                "🛑 Session ended by user (budget limit)."
+            )
             self._shutdown.set()
             return True
 
-        # --- Top-up: "T 5" or "T 10.00" ---
         if upper.startswith("T"):
             parts = reply.strip().split(None, 1)
             topup = 0.0
@@ -565,21 +732,20 @@ class ClaudeGhost:
             settings.max_budget_usd = new_budget
             ghost_status.budget_max = new_budget
 
-            # Reset budget flags so checks work for the new limit
             self._budget_warned = False
             self._budget_warning_sent = False
             self._budget_paused = False
 
             ghost_status.add_log(
                 f"[green]Budget topped up: "
-                f"${old_budget:.2f} → ${new_budget:.2f}[/green]"
+                f"${old_budget:.2f} → "
+                f"${new_budget:.2f}[/green]"
             )
             self._notify(
                 f"✅ Budget updated: ${new_budget:.2f}\n"
                 f"▶️ Resuming task..."
             )
 
-            # Restart the Claude process with the new budget
             self._restarting = True
             self._bridge = GhostBridge(
                 task=self.task,
@@ -595,7 +761,6 @@ class ClaudeGhost:
             ghost_status.state = "RUNNING"
             return True
 
-        # Unrecognised reply while paused
         self._notify(
             "⏸️ Budget paused.\n"
             "\n"
@@ -610,9 +775,13 @@ class ClaudeGhost:
         s = ghost_status.stats
         turns = self._bridge.num_turns
 
-        # Populate changelog with full session data before saving
-        self._changelog.activity_log = ghost_status.get_plain_logs()
-        self._changelog.event_log = ghost_status.get_plain_events()
+        # Populate changelog with full session data
+        self._changelog.activity_log = (
+            ghost_status.get_plain_logs()
+        )
+        self._changelog.event_log = (
+            ghost_status.get_plain_events()
+        )
         self._changelog.stats_data = {
             "model": ghost_status.model,
             "afk_level": ghost_status.afk_level,
@@ -631,15 +800,33 @@ class ClaudeGhost:
             "telegram_received": s.telegram_received,
         }
 
-        # Finalize and save changelog
+        # Determine session status
+        if self._session_failed:
+            status_emoji = "❌"
+            status_text = "FAILED"
+        elif self._session_completed:
+            status_emoji = "✅"
+            status_text = "COMPLETED"
+        else:
+            status_emoji = "⚠️"
+            status_text = "ENDED"
+
+        self._changelog.session_outcome = (
+            f"{status_emoji} {status_text}"
+        )
+        if self._session_error_message:
+            self._changelog.session_error = (
+                self._session_error_message
+            )
+
         self._changelog.finalize()
         changelog_path = self._changelog.save()
 
         summary = (
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"  👻 Session Complete\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"  {status_emoji} Session {status_text}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "\n"
             f"📋 Task: {self._original_task}\n"
             f"⏱️ Duration: {s.elapsed_formatted}\n"
             f"💰 Cost: ${self._bridge.total_cost:.2f}\n"
@@ -649,26 +836,37 @@ class ClaudeGhost:
             f"user:{s.queries_user_approved} "
             f"blocked:{s.queries_blocked})\n"
             f"⚡ Commands: {s.commands_executed}\n"
-            f"\n{self._changelog.get_summary()}"
         )
+        if self._session_failed and self._session_error_message:
+            summary += (
+                f"\n⚠️ {self._session_error_message}\n"
+            )
+        summary += f"\n{self._changelog.get_summary()}"
 
         self._notify(summary)
 
-        # Send the session log file as a Telegram document
-        # so the user can tap to open it directly
         if changelog_path and self._telegram:
-            self._telegram.send_file(
-                str(changelog_path),
-                caption="📄 Session changelog",
-            )
+            try:
+                self._telegram.send_file(
+                    str(changelog_path),
+                    caption="📄 Session changelog",
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to send changelog: %s", exc,
+                )
 
         ghost_status.add_log(
             "[bold green]Session complete.[/bold green]"
         )
-        # Print separator + summary below the Live dashboard
         console.print("\n")
-        console.rule("[bold green]Session Complete[/bold green]")
-        console.print(f"  Duration: {s.elapsed_formatted}")
+        console.rule(
+            f"[bold green]Session {status_text}"
+            f"[/bold green]"
+        )
+        console.print(
+            f"  Duration: {s.elapsed_formatted}"
+        )
         console.print(
             f"  Cost: ${self._bridge.total_cost:.2f}"
             f" / ${self.config.budget_usd:.2f}"
@@ -678,7 +876,11 @@ class ClaudeGhost:
             console.print(
                 f"  Queries: {s.queries_total} total"
             )
-
+        if self._session_failed:
+            console.print(
+                f"  [red]Error: "
+                f"{self._session_error_message}[/red]"
+            )
         if changelog_path:
             console.print(
                 f"\n[cyan]📄 Changelog saved:[/cyan]"
@@ -699,11 +901,14 @@ def main() -> None:
     """Main entry point with session loop and update checker."""
     parser = argparse.ArgumentParser(
         prog="claudeghost",
-        description="Headless Supervisor for the Anthropic Claude CLI",
+        description=(
+            "Headless Supervisor for the Anthropic "
+            "Claude CLI"
+        ),
     )
     parser.add_argument(
         "task", nargs="?", default=None,
-        help="Task/prompt for claude (omit for interactive mode)",
+        help="Task/prompt for claude",
     )
     parser.add_argument(
         "--level", "-l", type=int, default=None,
@@ -716,7 +921,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--no-telegram", action="store_true",
-        help="Disable Telegram, use screen-only notifications",
+        help="Disable Telegram notifications",
     )
     parser.add_argument(
         "--interactive", "-i", action="store_true",
@@ -724,19 +929,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--model", "-m", type=str, default=None,
-        help="Claude model (sonnet, opus, haiku, or full name)",
+        help="Claude model",
     )
     args = parser.parse_args()
 
-    # Auto-update before anything else — if updated, restart
-    # the process so the new code is loaded.
     updated = auto_update()
     if updated:
         import os
         os.execv(sys.executable, [sys.executable] + sys.argv)
     console.print()
 
-    # Session loop
     while True:
         if args.interactive or args.task is None:
             config = run_interactive_launcher()
@@ -745,33 +947,44 @@ def main() -> None:
         else:
             config = run_quick_launcher(
                 task=args.task,
-                level=args.level or settings.default_afk_level,
-                budget=args.budget or settings.max_budget_usd,
+                level=(
+                    args.level
+                    or settings.default_afk_level
+                ),
+                budget=(
+                    args.budget
+                    or settings.max_budget_usd
+                ),
                 telegram=not args.no_telegram,
                 model=args.model,
             )
-            console.print("[bold blue]ClaudeGhost v2.0[/bold blue]")
+            console.print(
+                "[bold blue]ClaudeGhost v2.0[/bold blue]"
+            )
             console.print(f"  Task  : {config.task[:60]}")
             console.print(f"  Model : {config.model}")
             console.print(
                 f"  Level : {config.afk_level}"
                 f" ({config.level_name})"
             )
-            console.print(f"  Budget: ${config.budget_usd:.2f}")
-            notify = "Telegram" if config.telegram_enabled else "Screen"
+            console.print(
+                f"  Budget: ${config.budget_usd:.2f}"
+            )
+            notify = (
+                "Telegram" if config.telegram_enabled
+                else "Screen"
+            )
             console.print(f"  Notify: {notify}")
             console.print()
 
-        # Run session
         ghost = ClaudeGhost(config=config)
         ghost.run()
 
-        # Ask if user wants another session
         console.print()
         try:
             another = Confirm.ask(
                 "[bold]Start another session?[/bold]",
-                default=False
+                default=False,
             )
             if not another:
                 console.print("[green]Goodbye![/green]")
@@ -780,7 +993,6 @@ def main() -> None:
             console.print("\n[yellow]Goodbye![/yellow]")
             break
 
-        # Reset args for next session (force interactive)
         args.task = None
         args.interactive = True
         console.print()

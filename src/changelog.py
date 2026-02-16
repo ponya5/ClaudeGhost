@@ -1,10 +1,9 @@
 """Changelog tracking for ClaudeGhost sessions."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from src.utils import logger
 
@@ -24,6 +23,8 @@ class ChangeLog:
         self.activity_log: List[str] = []
         self.event_log: List[str] = []
         self.stats_data: Optional[dict] = None
+        self.session_outcome: str = ""
+        self.session_error: str = ""
 
     def add_command(self, command: str) -> None:
         """Record a command that was executed."""
@@ -80,34 +81,71 @@ class ChangeLog:
         lines.append("ClaudeGhost Session Changelog")
         lines.append("=" * 70)
         lines.append("")
+
+        # Session outcome (matches Telegram summary)
+        if self.session_outcome:
+            lines.append(f"Outcome: {self.session_outcome}")
+        if self.session_error:
+            lines.append(f"Error:   {self.session_error}")
+        lines.append("")
+
         lines.append(f"Session ID: {self.session_id}")
         lines.append(f"Task: {self.task}")
-        lines.append(f"Started: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        started = self.start_time.strftime(
+            '%Y-%m-%d %H:%M:%S'
+        )
+        lines.append(f"Started: {started}")
         if self.end_time:
-            lines.append(
-                f"Ended: {self.end_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            ended = self.end_time.strftime(
+                '%Y-%m-%d %H:%M:%S'
             )
+            lines.append(f"Ended: {ended}")
         lines.append(f"Duration: {duration}")
         lines.append("")
 
-        # Session Statistics
+        # Session Statistics (matches terminal "Statistics" panel)
         if self.stats_data:
             sd = self.stats_data
             lines.append("-" * 70)
-            lines.append("Session Statistics")
+            lines.append("Session Status")
             lines.append("-" * 70)
-            lines.append(f"  Model:          {sd.get('model', 'N/A')}")
-            lines.append(f"  AFK Level:      {sd.get('afk_level', 'N/A')} ({sd.get('level_name', '')})")
-            lines.append(f"  Budget:         ${sd.get('budget_used', 0):.2f} / ${sd.get('budget_max', 0):.2f}")
-            lines.append(f"  Elapsed:        {sd.get('elapsed', duration)}")
-            lines.append(f"  Turns:          {sd.get('turns', 0)}")
-            lines.append(f"  Queries Total:  {sd.get('queries_total', 0)}")
-            lines.append(f"    Auto-approved:  {sd.get('queries_auto', 0)}")
-            lines.append(f"    User-approved:  {sd.get('queries_user', 0)}")
-            lines.append(f"    Blocked:        {sd.get('queries_blocked', 0)}")
-            lines.append(f"  Commands:       {sd.get('commands', 0)}")
+            model = sd.get('model', 'N/A')
+            lines.append(f"  Model:          {model}")
+            afk = sd.get('afk_level', 'N/A')
+            lvl = sd.get('level_name', '')
+            lines.append(
+                f"  AFK Level:      {afk} ({lvl})"
+            )
+            used = sd.get('budget_used', 0)
+            bmax = sd.get('budget_max', 0)
+            lines.append(
+                f"  Budget:         "
+                f"${used:.2f} / ${bmax:.2f}"
+            )
+            lines.append("")
+            lines.append("-" * 70)
+            lines.append("Statistics")
+            lines.append("-" * 70)
+            elapsed = sd.get('elapsed', duration)
+            lines.append(f"  Elapsed:        {elapsed}")
+            turns = sd.get('turns', 0)
+            lines.append(f"  Turns:          {turns}")
+            qt = sd.get('queries_total', 0)
+            lines.append(f"  Queries Total:  {qt}")
+            qa = sd.get('queries_auto', 0)
+            lines.append(f"    Auto-approved:  {qa}")
+            qu = sd.get('queries_user', 0)
+            lines.append(f"    User-approved:  {qu}")
+            qb = sd.get('queries_blocked', 0)
+            lines.append(f"    Blocked:        {qb}")
+            cmds = sd.get('commands', 0)
+            lines.append(f"  Commands:       {cmds}")
             if sd.get('telegram_enabled'):
-                lines.append(f"  Telegram I/O:   {sd.get('telegram_sent', 0)} / {sd.get('telegram_received', 0)}")
+                ts = sd.get('telegram_sent', 0)
+                tr = sd.get('telegram_received', 0)
+                lines.append(
+                    f"  Telegram I/O:   {ts} / {tr}"
+                )
             lines.append("")
 
         # Activity Log
@@ -168,8 +206,9 @@ class ChangeLog:
     def get_summary(self) -> str:
         """Get a brief summary for Telegram notification."""
         summary_lines = [
-            f"📝 Session Complete",
+            "📝 Session Complete",
             f"Files modified: {len(self.files_modified)}",
-            f"Commands executed: {len(self.commands_executed)}",
+            f"Commands executed: "
+            f"{len(self.commands_executed)}",
         ]
         return "\n".join(summary_lines)
