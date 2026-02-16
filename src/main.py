@@ -93,23 +93,14 @@ class ClaudeGhost:
 
         if self._telegram:
             self._telegram.start_polling(self._handle_reply)
-            from src.bridge import _LEVEL_ALLOWED_TOOLS
-            allowed = _LEVEL_ALLOWED_TOOLS.get(
-                self.afk_level, []
-            )
-            tools_str = (
-                ", ".join(allowed) if allowed
-                else "Read only"
-            )
-            if self.afk_level >= 5:
-                tools_str = "ALL (skip permissions)"
             self._notify(
                 "👻 ClaudeGhost Started\n"
                 "\n"
                 f"📋 Task: {self.task}\n"
                 f"🤖 AFK Level: {self.afk_level} "
                 f"({self.config.level_name})\n"
-                f"🔧 Allowed tools: {tools_str}\n"
+                f"🔧 Mode: "
+                f"{self.config.level_description}\n"
                 f"💰 Budget: ${self.config.budget_usd:.2f}"
             )
         elif self._screen:
@@ -272,18 +263,13 @@ class ClaudeGhost:
             )
             ghost_status.stats.record_auto_approve()
             self._changelog.add_command(command)
-            if self.afk_level == 5:
-                self._notify(
-                    f"⚡ Auto-approved (God Mode): "
-                    f"{command[:200]}"
-                )
         else:
-            # In headless mode, the bridge auto-approves
-            # any text-based prompts it detects (since
-            # --allowedTools is the real enforcement).
-            # We still notify the user about what happened.
+            # ASK_USER: notify via Telegram/screen.
+            # The tool already executed (headless mode),
+            # but the user can Block & Redo (B) if they
+            # disagree with the action.
             ghost_status.add_log(
-                f"[yellow]Tool detected:[/yellow] "
+                f"[yellow]⚠ User attention:[/yellow] "
                 f"{command[:60]}"
             )
             ghost_status.stats.record_auto_approve()
@@ -291,7 +277,6 @@ class ClaudeGhost:
             msg = format_approval_message(
                 command, category,
             )
-            # Notify user about the action (informational)
             self._notify(msg)
 
     # -- Reply handling ----------------------------------------------
@@ -627,9 +612,38 @@ class ClaudeGhost:
     def _handle_event_inner(
         self, event: StreamEvent,
     ) -> None:
-        """Record stream events into the changelog."""
+        """Record stream events and apply guardian logic.
+
+        The guardian evaluates each tool against the AFK
+        level to decide: auto-approve (silent) or notify
+        the user.  Since we run in headless mode, tools
+        execute first — the user can Block & Redo (B) if
+        they disagree.
+
+        Level 1: user notified of EVERY action
+        Level 2: auto reads, notify writes/executes
+        Level 3: auto reads+writes, notify executes
+        Level 4: auto reads+writes+executes, notify high-risk
+        Level 5: auto everything (notify only on errors)
+        """
         if event.tool_name:
             name = event.tool_name.lower()
+
+            # Build a command string for the guardian
+            path = event.file_path or ""
+            inp = event.tool_input or ""
+            cmd_str = (
+                f"{event.tool_name}: {path or inp}"
+                if (path or inp)
+                else event.tool_name
+            )
+
+            # Guardian decides based on AFK level
+            decision, category = evaluate(
+                cmd_str, self.afk_level,
+            )
+
+            # Record the action in the changelog
             if name in (
                 "write", "edit", "editfile",
                 "writefile", "create",
@@ -661,6 +675,26 @@ class ClaudeGhost:
                 self._changelog.add_change(
                     f"{event.tool_name}: {desc[:200]}"
                 )
+
+            # Notify user based on guardian decision
+            if decision == Decision.AUTO_APPROVE:
+                ghost_status.add_log(
+                    f"[green]Auto-approved:[/green] "
+                    f"{cmd_str[:60]}"
+                )
+                ghost_status.stats.record_auto_approve()
+            else:
+                # ASK_USER: notify via Telegram/screen
+                ghost_status.add_log(
+                    f"[yellow]⚠ User attention:[/yellow]"
+                    f" {cmd_str[:60]}"
+                )
+                ghost_status.stats.record_auto_approve()
+                msg = format_approval_message(
+                    cmd_str, category,
+                )
+                self._notify(msg)
+
         if event.result_text:
             self._changelog.add_change(
                 f"Result: {event.result_text[:300]}"

@@ -27,11 +27,11 @@ LEVEL_NAMES: dict[int, str] = {
 }
 
 LEVEL_DESCRIPTIONS: dict[int, str] = {
-    1: "Read only — write/execute/high-risk blocked by CLI",
-    2: "Read only — write/execute/high-risk blocked by CLI",
-    3: "Read+Write allowed — execute/high-risk blocked by CLI",
-    4: "Read+Write+Execute allowed — high-risk blocked by CLI",
-    5: "ALL tools allowed — skip all permission checks",
+    1: "Ask user for EVERY action before proceeding",
+    2: "Auto: read — Ask user: write, execute, high-risk",
+    3: "Auto: read, write — Ask user: execute, high-risk",
+    4: "Auto: read, write, execute — Ask user: high-risk",
+    5: "Fully autonomous — notify on critical errors only",
 }
 
 MODEL_OPTIONS: dict[str, str] = {
